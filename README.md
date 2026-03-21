@@ -39,6 +39,20 @@ npx skills add chen4hao/shc-skills -g --all
 - GitHub Copilot
 - 以及更多...
 
+## 更新
+
+Skills CLI 會自動追蹤每個 skill 的來源與版本。當此 repo 有更新時：
+
+```bash
+# 檢查哪些已安裝的 skills 有新版本（不會安裝）
+npx skills check
+
+# 更新所有已安裝的 skills
+npx skills update
+```
+
+不需要指定 repo 名稱——CLI 從本地記錄自動判斷每個 skill 的來源。
+
 ## 管理
 
 ```bash
