@@ -60,8 +60,7 @@ description: >
 本步驟僅在來源為**影片（YouTube 等）或 podcast 的訪談/對話內容**時執行。純文字文章跳過此步驟。
 
 **最終目標**：
-1. 將影片/音訊下載至本地備存
-2. 產出**三個 SRT 字幕檔**——這是**硬性要求**：
+1. 產出**三個 SRT 字幕檔**——這是**硬性要求**：
    - `*.en.srt` — 純英文字幕
    - `*.zh-tw.srt` — 純繁體中文字幕
    - `*.en&cht.srt` — 中英雙語字幕（每條字幕兩行：英文在上、繁體中文在下）
@@ -109,19 +108,24 @@ URL 是否為影片/podcast？
 
 ### 擷取流程
 
-#### 步驟 A：下載影音檔 + 英文字幕（單次 yt-dlp 呼叫）
+#### 步驟 A：下載字幕（優先）+ 條件性下載影音檔
 
-**關鍵**：只呼叫一次 yt-dlp，同時下載影音檔和**僅英文**字幕。不下載中文自動字幕（原因：步驟 C 一律從英文翻譯為中文，中文自動字幕不會被使用，且下載中文字幕常觸發 YouTube 429 限流導致整個下載中斷）。
+**核心策略：字幕優先，影音按需。** 先嘗試只下載字幕和 metadata，若成功取得字幕檔則**跳過影音下載**。只有在完全無法取得任何字幕時，才下載完整影音檔（後續用 Whisper STT 產生字幕）。
 
-用 Write 工具寫入 `/tmp/distill-subs/download.py`（**重要**：不可直接在 Bash 中執行 yt-dlp，因為 `%(id)s.%(ext)s` 的小括號會觸發安全啟發式警告）：
+不下載中文自動字幕（原因：步驟 C 一律從英文翻譯為中文，中文自動字幕不會被使用，且下載中文字幕常觸發 YouTube 429 限流導致整個下載中斷）。
+
+**步驟 A-1**：用 Write 工具寫入 `/tmp/distill-subs/download.py`（**重要**：不可直接在 Bash 中執行 yt-dlp，因為 `%(id)s.%(ext)s` 的小括號會觸發安全啟發式警告）：
 ```python
-import subprocess, sys, shutil, os, json
+import subprocess, sys, shutil, os, json, glob
 
 # === 清理舊暫存並建立目錄（取代獨立的 mkdir Bash 命令） ===
 shutil.rmtree("/tmp/distill-subs", True)
 os.makedirs("/tmp/distill-subs", exist_ok=True)
 
 url = sys.argv[1]
+
+# === 階段 1：只下載字幕 + metadata（不下載影音） ===
+print("=== 階段 1：嘗試下載字幕 ===")
 subprocess.run([
     "yt-dlp",
     "--cookies-from-browser", "chrome",
@@ -129,15 +133,33 @@ subprocess.run([
     "--sub-langs", "en-orig,en",
     "--convert-subs", "srt",
     "--write-info-json",
-    "-S", "height:720",
-    "-f", "bv+ba/ba/best",
-    "--merge-output-format", "mp4",
+    "--skip-download",
     "-o", "/tmp/distill-subs/%(id)s.%(ext)s",
     url
 ], check=True)
 
+# === 檢查是否取得字幕 ===
+srt_files = glob.glob("/tmp/distill-subs/*.srt") + glob.glob("/tmp/distill-subs/*.vtt")
+has_subs = len(srt_files) > 0
+
+if has_subs:
+    print(f"✅ 成功取得 {len(srt_files)} 個字幕檔，跳過影音下載")
+else:
+    # === 階段 2：無字幕，下載完整影音檔（供後續 Whisper STT） ===
+    print("⚠️ 無法取得字幕，開始下載影音檔...")
+    subprocess.run([
+        "yt-dlp",
+        "--cookies-from-browser", "chrome",
+        "--write-info-json",
+        "-S", "height:720",
+        "-f", "bv+ba/ba/best",
+        "--merge-output-format", "mp4",
+        "-o", "/tmp/distill-subs/%(id)s.%(ext)s",
+        url
+    ], check=True)
+    print("✅ 影音檔下載完成")
+
 # === 從 .info.json 讀取影片資訊（取代額外的 yt-dlp --dump-json 呼叫） ===
-import glob
 info_files = glob.glob("/tmp/distill-subs/*.info.json")
 if info_files:
     with open(info_files[0]) as f:
@@ -148,11 +170,14 @@ if info_files:
     print(f"Duration: {info.get('duration_string', 'N/A')}")
     desc = info.get('description', 'N/A')
     print(f"Description: {desc[:2000]}")
+
+# === 輸出狀態供後續步驟判斷 ===
+print(f"\nSUBS_AVAILABLE={'YES' if has_subs else 'NO'}")
 ```
 
 > **為何預設使用 cookies**：YouTube 越來越頻繁地要求身份驗證（bot check），不帶 cookies 的 yt-dlp 會直接失敗。`--cookies-from-browser chrome` 從本機 Chrome 瀏覽器讀取已登入的 cookies，繞過 bot check。首次執行時 macOS 可能會彈出鑰匙圈存取授權，同意後後續不再詢問。
 
-用 Bash 執行下載：
+**步驟 A-2**：用 Bash 執行下載：
 ```bash
 uv run python3 /tmp/distill-subs/download.py "$URL"
 ```
@@ -162,7 +187,9 @@ uv run python3 /tmp/distill-subs/download.py "$URL"
 ls /tmp/distill-subs/
 ```
 
-> **下載格式說明**：預設優先下載影片（720p 以下 + 最佳音訊，合併為 mp4）。若平台僅提供音訊（如純 podcast），會自動降級為 m4a 音訊格式。
+**判斷後續流程**：根據輸出中的 `SUBS_AVAILABLE` 判斷：
+- `YES`：有字幕，繼續步驟 B（去重清理）。**無影音檔需要處理。**
+- `NO`：無字幕但有影音檔，繼續步驟 B，並在步驟 B 之前/之後使用 Whisper STT 產生字幕。
 
 > **VTT vs SRT**：`--convert-subs "srt"` 會自動將 VTT 轉為 SRT。若 yt-dlp 因中途錯誤而只產出 `.vtt` 檔，**不需要額外用 ffmpeg 轉檔**——步驟 B 的 dedup.py 已能直接處理 VTT 和 SRT 兩種格式。
 
@@ -598,20 +625,24 @@ Hello, welcome to today's interview.
 你好，歡迎來到今天的訪談。
 ```
 
-#### 步驟 E：複製影音檔和字幕到最終位置
+#### 步驟 E：複製字幕和影音檔到最終位置
 
-**重要**：所有檔案的主檔名必須相同（例如主檔名為 `2026-03-Interview-with-Sam-Altman`，則產出 `.en.srt`、`.zh-tw.srt`、`.en&cht.srt`、`.mp4`）。
+**重要**：所有字幕檔的主檔名必須相同（例如主檔名為 `2026-03-Interview-with-Sam-Altman`，則產出 `.en.srt`、`.zh-tw.srt`、`.en&cht.srt`）。影音檔也使用相同主檔名，但存放在統一的影音目錄。
 
 **重要**：因為雙語字幕的檔名含 `&`（`.en&cht.srt`），直接在 Bash 中使用 `cp` 會觸發安全啟發式警告。因此所有複製操作統一寫成 Python 腳本執行。
+
+**影音檔存放規則**：所有影音檔統一存放在 `/Users/chen4hao/Workspace/aiProjects/infoAggr/download/`，不與筆記放在同一目錄。若步驟 A 未下載影音檔（因為成功取得字幕），則跳過影音複製。
 
 用 Write 工具寫入 `/tmp/distill-subs/copy_files.py`：
 ```python
 import shutil, glob, os
 
 # === 設定 ===
-dest_dir = "{儲存目錄}"
+dest_dir = "{儲存目錄}"          # 筆記 + 字幕的目錄
+media_dir = "/Users/chen4hao/Workspace/aiProjects/infoAggr/download"  # 影音檔統一目錄
 prefix = "{檔案名稱前綴}"
 os.makedirs(dest_dir, exist_ok=True)
+os.makedirs(media_dir, exist_ok=True)
 
 # 複製英文字幕
 shutil.copy2("/tmp/distill-subs/en.srt", f"{dest_dir}/{prefix}.en.srt")
@@ -619,15 +650,21 @@ shutil.copy2("/tmp/distill-subs/en.srt", f"{dest_dir}/{prefix}.en.srt")
 shutil.copy2("/tmp/distill-subs/zh-tw.srt", f"{dest_dir}/{prefix}.zh-tw.srt")
 # 複製雙語字幕（檔名含 &，不可在 Bash 中直接 cp）
 shutil.copy2("/tmp/distill-subs/bilingual.srt", f"{dest_dir}/{prefix}.en&cht.srt")
-# 複製影音檔（自動偵測 mp4/m4a/webm）
+
+# 複製影音檔到統一影音目錄（僅在有下載影音檔時）
+media_copied = False
 for ext in ["mp4", "m4a", "webm"]:
     files = glob.glob(f"/tmp/distill-subs/*.{ext}")
     if files:
-        shutil.copy2(files[0], f"{dest_dir}/{prefix}.{ext}")
-        print(f"Copied {files[0]} -> {prefix}.{ext}")
+        shutil.copy2(files[0], f"{media_dir}/{prefix}.{ext}")
+        print(f"Copied media: {files[0]} -> {media_dir}/{prefix}.{ext}")
+        media_copied = True
         break
 
-print("All files copied to", dest_dir)
+if not media_copied:
+    print("No media file to copy (subtitles were available, skipped media download)")
+
+print(f"Subtitles copied to {dest_dir}")
 ```
 
 用 Bash 執行：
@@ -647,7 +684,7 @@ uv run python3 /tmp/distill-subs/copy_files.py
 
 ### SRT 字幕檔儲存規則
 
-產出**三個 SRT 字幕檔** + **影音檔**，與 markdown 筆記存放在**相同目錄**下：
+產出**三個 SRT 字幕檔**，與 markdown 筆記存放在**相同目錄**下。**影音檔**（若有下載）統一存放在 `/Users/chen4hao/Workspace/aiProjects/infoAggr/download/`。
 
 範例：
 ```
@@ -655,20 +692,23 @@ uv run python3 /tmp/distill-subs/copy_files.py
 ├── 2026-03-Interview-with-Sam-Altman.md              ← 萃取筆記
 ├── 2026-03-Interview-with-Sam-Altman.en.srt          ← 英文字幕
 ├── 2026-03-Interview-with-Sam-Altman.zh-tw.srt       ← 繁體中文字幕
-├── 2026-03-Interview-with-Sam-Altman.en&cht.srt      ← 中英雙語字幕（en 在上）
-└── 2026-03-Interview-with-Sam-Altman.mp4             ← 影片檔（與字幕同主檔名）
+└── 2026-03-Interview-with-Sam-Altman.en&cht.srt      ← 中英雙語字幕（en 在上）
+
+/Users/chen4hao/Workspace/aiProjects/infoAggr/download/
+└── 2026-03-Interview-with-Sam-Altman.mp4             ← 影片檔（僅在無字幕時才下載）
 ```
 
-> **檔案命名規則**：所有檔案共用相同主檔名，字幕副檔名分別為 `.en.srt`、`.zh-tw.srt`、`.en&cht.srt`，影音副檔名依實際格式而定（`.mp4` 為影片、`.m4a` 為音訊）。
+> **檔案命名規則**：所有檔案共用相同主檔名，字幕副檔名分別為 `.en.srt`、`.zh-tw.srt`、`.en&cht.srt`。影音檔副檔名依實際格式而定（`.mp4` 為影片、`.m4a` 為音訊），統一放在 `download/` 目錄。
+> **影音下載條件**：只有在步驟 A 無法取得任何字幕時，才會下載影音檔（供 Whisper STT 使用）。
 
 ### 失敗處理
 
 **分級降級**（必須按順序嘗試，禁止直接跳到最低級）：
 
-1. **目標**：三個 SRT 字幕檔（`.en.srt` + `.zh-tw.srt` + `.en&cht.srt`）+ 影音檔
+1. **目標**：三個 SRT 字幕檔（`.en.srt` + `.zh-tw.srt` + `.en&cht.srt`）。影音檔僅在無字幕時下載（存放於 `download/`）
 2. **降級 1**：若中文翻譯在子代理處理中累積錯誤過多，仍然產出三個 SRT 檔並在輸出末尾註明翻譯品質問題
-3. **降級 2**：若連英文字幕都下載失敗（yt-dlp 完全無法取得任何字幕），在輸出末尾附上：`> 字幕擷取：未成功 — {原因}`
-4. **降級 3**：若影音下載失敗但字幕成功，仍然產出字幕檔，在輸出末尾註明影音下載失敗
+3. **降級 2**：若連英文字幕都下載失敗（yt-dlp 完全無法取得任何字幕），下載影音檔後用 Whisper STT 產生字幕
+4. **降級 3**：若 Whisper STT 也失敗，在輸出末尾附上：`> 字幕擷取：未成功 — {原因}`
 5. **不阻擋後續的萃取流程**，繼續進行適用性評估和深度萃取
 
 **嚴禁**：因為中文字幕下載失敗就直接放棄雙語目標。必須走子代理翻譯補全流程。
@@ -731,7 +771,7 @@ uv run python3 /tmp/distill-subs/cleanup.py "{專案輸出目錄}"
 > **來源**：[原文連結]({URL})
 > **內容類型**：{文章 / 訪談 / 演講 / 影片 / 報告}
 > **核心論點**：{一句話概括全文最重要的論點}
-> **影音檔**：{若有下載影音檔，列出檔名；若無則省略此行}
+> **影音檔**：{若有下載影音檔，列出完整路徑（位於 download/ 目錄）；若無則省略此行}
 > **字幕檔**：{若有產生 SRT 字幕檔，列出三個檔名：*.en.srt、*.zh-tw.srt、*.en&cht.srt；若無則省略此行}
 
 ---
