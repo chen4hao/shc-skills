@@ -1,16 +1,18 @@
 """合併翻譯批次並驗證條目數。
 
-用法: uv run python3 combine_zh.py <PROJ_DIR> <TEMP_DIR>
-  PROJ_DIR: 專案輸出目錄（含 zh_batch_*.srt）
+用法: uv run python3 combine_zh.py <PROJ_DIR> <TEMP_DIR> <VIDEO_ID>
+  PROJ_DIR: 專案輸出目錄（含 {VIDEO_ID}_zh_batch_*.srt）
   TEMP_DIR: 暫存目錄（寫入 zh.combined.srt，含 *.en*.clean.srt）
+  VIDEO_ID: 影片 ID（用於匹配正確的批次檔）
 """
 import glob, re, sys
 
 proj_dir = sys.argv[1]
 temp_dir = sys.argv[2]
+video_id = sys.argv[3]
 
 combined = ""
-batch_files = sorted(glob.glob(f"{proj_dir}/zh_batch_*.srt"))
+batch_files = sorted(glob.glob(f"{proj_dir}/{video_id}_zh_batch_*.srt"))
 for f in batch_files:
     combined += open(f).read()
 with open(f"{temp_dir}/zh.combined.srt", "w") as out:
