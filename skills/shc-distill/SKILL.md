@@ -28,7 +28,13 @@ description: >
 
 1. **取得內容**：根據來源類型取得內容：
    - **網頁 URL**：使用 WebFetch 取得完整內容。若內容過長或需要更多細節，進行第二次 fetch 聚焦於引用語句、數據、故事等細節。
-   - **本地 PDF/epub 檔案**（`file://` 路徑或絕對路徑）：使用 Read 工具讀取 PDF（每次最多 20 頁）。先讀取前 20 頁判斷全文結構（目錄、章節數、總頁數），再決定是否進入「大型內容分段處理」流程（見下方規則）。
+   - **本地 PDF 檔案**（`file://` 路徑或絕對路徑）：使用 Read 工具讀取 PDF（每次最多 20 頁）。先讀取前 20 頁判斷全文結構（目錄、章節數、總頁數），再決定是否進入「大型內容分段處理」流程（見下方規則）。
+   - **本地 epub 檔案**：epub 是 zip 壓縮包，**Read 工具會讀到亂碼**，必須使用預置腳本提取。先用 `--list` 掃描結構，再用 `--all` 提取所有章節為獨立 .txt 檔：
+     ```bash
+     uv run python3 $SCRIPTS/epub_extract.py "{epub路徑}" /tmp/distill-{ID} --list
+     uv run python3 $SCRIPTS/epub_extract.py "{epub路徑}" /tmp/distill-{ID} --all
+     ```
+     提取後用 Read 工具讀取各 .txt 檔（中文內容 limit=35），或讓子代理直接讀取。再根據章節數量決定是否進入「大型內容分段處理」流程。
    - **X/Twitter 平台 fallback**：若 URL 為 `x.com` 或 `twitter.com` 的貼文（格式如 `https://x.com/{user}/status/{id}`），因 X 平台封鎖爬取，WebFetch 通常會失敗（402 錯誤）。此時依序嘗試以下替代方案：
      1. **Twitter Thread Reader**（優先）：將 URL 轉換為 `https://twitter-thread.com/t/{status_id}`，例如 `https://x.com/bcherny/status/2007179832300581177` → `https://twitter-thread.com/t/2007179832300581177`
      2. **oEmbed API**：嘗試 `https://publish.twitter.com/oembed?url={原始URL}` 取得基本推文內容
@@ -59,15 +65,27 @@ description: >
 
 #### 步驟 1：結構掃描與分段規劃
 
+**PDF 檔案**：
 1. 用 Read 工具讀取前 20 頁，識別目錄、章節結構、總頁數
 2. 規劃分段策略：按章節自然邊界切分，每段 30-60 頁為宜
 3. 確定每段的頁碼範圍和章節主題
 
+**epub 檔案**：
+1. 用 `$SCRIPTS/epub_extract.py --list` 掃描結構，獲得章節清單和各章大小
+2. 用 `$SCRIPTS/epub_extract.py --all` 提取所有章節為獨立 .txt 檔（存到 `/tmp/distill-{ID}/`）
+3. 按章節自然邊界規劃分段（每段可包含 1-3 章，視大小而定）
+
 #### 步驟 2：並行讀取所有頁面
 
+**PDF 檔案**：
 - 用 Read 工具並行讀取所有頁面（每次最多 20 頁，多個 Read 呼叫可並行）
 - 讀取時為每個分段整理**內容摘要**（包含關鍵論點、引用、故事、案例等細節）
 - **重要**：掃描版 PDF（圖片）只能由主 context 的 Read 工具讀取，子代理無法直接讀取 PDF。因此必須在主 context 中將 OCR 後的文字內容整理成充足的摘要，傳入子代理的 prompt
+
+**epub 檔案**：
+- 步驟 1 已將各章提取為獨立 .txt 檔，子代理可直接用 Read 工具讀取這些 .txt 檔
+- 子代理 prompt 中提供 .txt 檔的完整路徑，讓子代理自行讀取並萃取
+- **注意**：中文 .txt 檔讀取時 limit 設為 35 行（中文 token 密度是英文的 3-5 倍）
 
 #### 步驟 3：啟動子代理並行萃取
 
