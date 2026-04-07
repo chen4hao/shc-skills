@@ -12,13 +12,20 @@ proj_dir = sys.argv[2] if len(sys.argv) > 2 else ""
 video_id = sys.argv[3] if len(sys.argv) > 3 else ""
 
 # 清理專案目錄中的暫存翻譯批次檔（僅限此 video_id 的檔案）
+removed_count = 0
 if proj_dir:
     prefix = f"{video_id}_" if video_id else ""
     for pattern in [f"{prefix}zh_batch_*.srt", f"{prefix}en_batch_*.srt"]:
         for f in glob.glob(os.path.join(proj_dir, pattern)):
             os.remove(f)
+            removed_count += 1
             print(f"Removed {f}")
+    if removed_count == 0:
+        print(f"WARNING: No batch files found in {proj_dir} (prefix={prefix!r})")
 
 # 清理暫存目錄
-shutil.rmtree(temp_dir, True)
-print(f"Cleaned up {temp_dir}")
+if os.path.isdir(temp_dir):
+    shutil.rmtree(temp_dir, True)
+    print(f"Cleaned up {temp_dir}")
+else:
+    print(f"WARNING: Temp dir not found: {temp_dir}")
