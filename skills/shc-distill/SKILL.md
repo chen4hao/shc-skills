@@ -37,6 +37,7 @@ description: >
      提取後用 Read 工具讀取各 .txt 檔（中文內容 limit=35），或讓子代理直接讀取。再根據章節數量決定是否進入「大型內容分段處理」流程。完成後清理 `_tmp_extract/` 目錄。
    - **X/Twitter 平台 fallback**：若 URL 為 `x.com` 或 `twitter.com` 的貼文（格式如 `https://x.com/{user}/status/{id}`），因 X 平台封鎖爬取，WebFetch 通常會失敗（402 錯誤）。此時依序嘗試以下替代方案：
      1. **Twitter Thread Reader**（優先）：將 URL 轉換為 `https://twitter-thread.com/t/{status_id}`，例如 `https://x.com/bcherny/status/2007179832300581177` → `https://twitter-thread.com/t/2007179832300581177`
+        - **關鍵：不要用 WebFetch 讀這個站**。twitter-thread.com 把完整 thread 原文塞在 `<meta name="description">` 裡，但 WebFetch 的小模型對長內容會主動壓縮/改寫（實測會回傳條列摘要，並用 `[Full thread continues...]` 省略後半，即使 prompt 明確要求 verbatim 也無效）。正確作法：用 Bash 執行 `curl -sL "https://twitter-thread.com/t/{status_id}"`，再用 Read 工具讀取 persisted-output 檔，從 meta description 取得**無損的全文**。
      2. **oEmbed API**：嘗試 `https://publish.twitter.com/oembed?url={原始URL}` 取得基本推文內容
      3. **WebSearch**：用作者名稱和推文關鍵字搜尋，從搜尋結果中拼湊內容
    - 若最終仍無法取得完整內容，在筆記開頭註明資料來源的限制。
