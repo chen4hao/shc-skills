@@ -26,6 +26,17 @@ description: >
 
 ## 處理流程
 
+0. **重複檢查**（Preflight）：在任何下載或處理之前，先確認此來源是否已被 distill 過。
+   - 使用 Grep 工具搜尋輸出根目錄中所有 `.md` 檔案是否包含該 URL 或檔案路徑：
+     ```
+     Grep pattern="{URL或檔案路徑}" path="/Users/chen4hao/Workspace/aiProjects/infoAggr" glob="*.md"
+     ```
+   - **若找到匹配**：讀取該 `.md` 檔所在目錄，確認 `.md` 和 `.srt` 檔案是否完整存在。
+     - 全部存在 → 告知使用者「此來源已處理過」，列出檔案路徑，**結束流程**
+     - 部分缺失 → 告知使用者哪些檔案缺失，詢問是否補全
+   - **若無匹配** → 繼續步驟 1
+   - **此步驟在 download.py 之前執行，零網路請求、零子代理啟動**
+
 1. **取得內容**：根據來源類型取得內容：
    - **影片/podcast URL**（YouTube、Spotify 等）：**禁止 WebFetch**——YouTube 頁面只回傳 minified JS，WebFetch 無法取得任何有用資訊。直接跳到步驟 3 的字幕擷取流程，`download.py` 會同時輸出影片 metadata（Title、Channel、Upload date、Duration、Description），這是影片類來源的**唯一 metadata 來源**。
    - **網頁 URL**（非影片）：使用 WebFetch 取得完整內容。若內容過長或需要更多細節，進行第二次 fetch 聚焦於引用語句、數據、故事等細節。
