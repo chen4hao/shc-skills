@@ -270,9 +270,9 @@ description: >
 - **🔴 壓縮 summary 不可信**：若會話經歷過壓縮，summary 宣稱「某段內容仍在 context」一律不採信。下一步必須是「實際驗證磁碟檔案存在」或「重新從原始檔讀取」，禁止盲信。
 - **拼裝多個任務時，優先用 `$SCRIPTS/assemble_book_notes.py`** 從 task .output 目錄一次性產出所有章節檔案，避免每次手寫解析腳本：
   ```bash
-  uv run python3 $SCRIPTS/assemble_book_notes.py "{tasks_dir}" "{專案輸出目錄}" "{年份}-{月份}-{書名}"
+  uv run python3 $SCRIPTS/assemble_book_notes.py "{tasks_dir}" "{專案輸出目錄}" "{年份}-{月份}-{書名}" --use-h1
   ```
-  此腳本以 prompt 中的 `ch###_*.txt` 檔名作為章節對應的唯一可信來源，禁止從輸出 markdown 的 H1 反推章節順序。
+  **必須加 `--use-h1`**：從子代理輸出的 H1 `# Ch{N}: {Title}` 讀取正確章節號和標題。不加此旗標時，腳本用 epub txt 檔序號（ch005=0），幾乎所有書都會產生章節編號偏移。
 
 #### 步驟 5：產出彙總筆記
 
@@ -407,7 +407,7 @@ uv run python3 $SCRIPTS/whisper_stt.py "/tmp/distill-{VIDEO_ID}/{VIDEO_ID}.mp4" 
 ```
   腳本會自動：(1) ffmpeg 偵測音量分佈，動態調整 hallucination-silence-threshold；(2) mlx_whisper 轉錄；(3) 中文影片自動用 OpenCC s2twp 簡轉繁，產出 `.zh-tw.clean.srt`。
   `--language` 常用值：`zh`（中文）、`en`（英文）。若不確定語言可省略，由 Whisper 自動偵測。
-  **Whisper 產生的 SRT 不需要步驟 B 去重**（無漸進式顯示問題），直接跳到步驟 C。
+  **Whisper 產生的 SRT 不需要步驟 B 去重**（無漸進式顯示問題），但 `whisper_stt.py` 已內建 Step 2.5 自動清理 hallucination（連續重複條目 ≥3 條只保留第一條並重新編號）。若使用舊版腳本，可手動執行 `uv run python3 $SCRIPTS/clean_hallucination.py "{srt_path}"` 清理後再繼續。清理完成後直接跳到步驟 C。
 
 > **VTT vs SRT**：`--convert-subs "srt"` 會自動將 VTT 轉為 SRT。若 yt-dlp 因中途錯誤而只產出 `.vtt` 檔，**不需要額外用 ffmpeg 轉檔**——步驟 B 的 dedup.py 已能直接處理 VTT 和 SRT 兩種格式。
 

@@ -1,4 +1,4 @@
-"""使用 mlx_whisper 進行語音轉文字，含音量偵測與 OpenCC 繁體轉換。
+"""使用 mlx_whisper 進行語音轉文字，含音量偵測、幻覺清理與 OpenCC 繁體轉換。
 
 用法: uv run python3 whisper_stt.py <AUDIO_PATH> <OUTPUT_DIR> [--language LANG] [--model MODEL]
   AUDIO_PATH: 音訊或影片檔案路徑
@@ -9,6 +9,7 @@
 功能：
   1. 偵測音訊音量分佈，識別靜音段
   2. 執行 mlx_whisper 轉錄，設定 hallucination-silence-threshold 避免幻覺
+  2.5. 清理 Whisper 幻覺：移除連續重複條目（靜音/掌聲段產生的假文字）
   3. 若語言為中文（zh），自動用 OpenCC s2twp 將簡體轉為繁體中文
 """
 import argparse, subprocess, sys, os, struct, wave, contextlib, tempfile
@@ -110,6 +111,78 @@ with open(srt_path, 'r', encoding='utf-8') as f:
     content = f.read()
 entry_count = content.count('-->')
 print(f"  ✅ 轉錄完成: {entry_count} 條字幕")
+
+# === Step 2.5: 清理 Whisper 幻覺 ===
+print("\n=== Step 2.5: 清理 Whisper 幻覺 ===")
+
+def clean_hallucinations(srt_text, min_repeat=3):
+    """移除連續重複的 SRT 條目（Whisper 在靜音/掌聲段產生的幻覺）。
+
+    規則：若相同文字連續出現 >= min_repeat 條，只保留第一條。
+    清理後重新編號所有條目。
+    """
+    import re as _re
+    entries = []
+    lines = srt_text.split('\n')
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if _re.match(r'^\d+$', stripped) and i + 1 < len(lines) and '-->' in lines[i + 1]:
+            num = int(stripped)
+            ts = lines[i + 1].strip()
+            text_lines = []
+            k = i + 2
+            while k < len(lines) and lines[k].strip() and not (
+                _re.match(r'^\d+$', lines[k].strip())
+                and k + 1 < len(lines)
+                and '-->' in lines[k + 1]
+            ):
+                text_lines.append(lines[k].strip())
+                k += 1
+            entries.append((ts, '\n'.join(text_lines)))
+            i = k
+        else:
+            i += 1
+
+    if not entries:
+        return srt_text, 0
+
+    # 偵測連續重複
+    cleaned = []
+    removed = 0
+    streak_start = 0
+    while streak_start < len(entries):
+        text_at_start = entries[streak_start][1]
+        streak_end = streak_start + 1
+        while streak_end < len(entries) and entries[streak_end][1] == text_at_start:
+            streak_end += 1
+        streak_len = streak_end - streak_start
+        if streak_len >= min_repeat:
+            # 幻覺：只保留第一條
+            cleaned.append(entries[streak_start])
+            removed += streak_len - 1
+        else:
+            # 正常：全部保留
+            cleaned.extend(entries[streak_start:streak_end])
+        streak_start = streak_end
+
+    # 重新編號並組裝
+    parts = []
+    for idx, (ts, text) in enumerate(cleaned, 1):
+        parts.append(f"{idx}\n{ts}\n{text}\n")
+    return '\n'.join(parts) + '\n' if parts else '', removed
+
+content, removed_count = clean_hallucinations(content)
+if removed_count > 0:
+    # 回寫清理後的 SRT
+    with open(srt_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    new_count = content.count('-->')
+    print(f"  🧹 移除 {removed_count} 條幻覺條目（連續重複文字）")
+    print(f"  ✅ 清理後: {new_count} 條字幕（原 {entry_count} 條）")
+    entry_count = new_count
+else:
+    print(f"  ✅ 無幻覺條目，維持 {entry_count} 條字幕")
 
 # === Step 3: OpenCC 繁體轉換（僅中文） ===
 detected_lang = args.language or "auto"
