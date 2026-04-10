@@ -11,8 +11,8 @@ if len(sys.argv) != 2:
 
 d = sys.argv[1]
 removed = 0
-for pat in ("ch*__*.txt", "ch[0-9][0-9][0-9]_*.txt"):
+for pat in ("ch*__*.txt", "ch[0-9][0-9][0-9]_*.txt", "_distill_template.md"):
     for f in glob.glob(os.path.join(d, pat)):
         os.remove(f)
         removed += 1
-print(f"Removed {removed} txt files from {d}")
+print(f"Removed {removed} files from {d}")
