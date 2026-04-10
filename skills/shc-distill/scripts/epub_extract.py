@@ -40,15 +40,15 @@ def get_spine_order(z: zipfile.ZipFile) -> list[str]:
 
     opf_content = z.read(opf_path).decode('utf-8')
 
-    # Parse manifest: id -> href
+    # Parse manifest: id -> href (handle any attribute order)
+    from urllib.parse import unquote
     manifest = {}
-    for m in re.finditer(r'<item\s+[^>]*id="([^"]*)"[^>]*href="([^"]*)"', opf_content):
-        item_id = m.group(1)
-        href = m.group(2)
-        # URL-decode the href
-        from urllib.parse import unquote
-        href = unquote(href)
-        manifest[item_id] = href
+    for m in re.finditer(r'<item\s+([^>]*?)/?>', opf_content):
+        attrs = m.group(1)
+        id_m = re.search(r'id="([^"]*)"', attrs)
+        href_m = re.search(r'href="([^"]*)"', attrs)
+        if id_m and href_m:
+            manifest[id_m.group(1)] = unquote(href_m.group(1))
 
     # Parse spine order
     spine_ids = re.findall(r'<itemref\s+idref="([^"]*)"', opf_content)
@@ -76,6 +76,7 @@ def get_toc_titles(z: zipfile.ZipFile) -> dict[str, str]:
         if name.endswith('toc.ncx'):
             toc_content = z.read(name).decode('utf-8')
             # Extract navPoint text and src pairs
+            from urllib.parse import unquote as _unquote
             for nav in re.finditer(
                 r'<navPoint[^>]*>.*?<text>([^<]+)</text>.*?<content\s+src="([^"]*)"',
                 toc_content, re.DOTALL
@@ -83,8 +84,7 @@ def get_toc_titles(z: zipfile.ZipFile) -> dict[str, str]:
                 text = nav.group(1).strip()
                 src = nav.group(2).strip()
                 # URL-decode and remove fragment
-                from urllib.parse import unquote
-                src = unquote(src).split('#')[0]
+                src = _unquote(src).split('#')[0]
                 # Normalize path
                 toc_dir = os.path.dirname(name)
                 if toc_dir:
@@ -112,6 +112,17 @@ def extract_text(z: zipfile.ZipFile, filepath: str) -> str:
     return '\n'.join(lines)
 
 
+def get_html_files_fallback(z: zipfile.ZipFile) -> list[str]:
+    """Fallback: get all HTML/XHTML files from zip, sorted by name."""
+    html_files = sorted([
+        f for f in z.namelist()
+        if f.endswith(('.html', '.xhtml', '.htm'))
+        and 'toc' not in f.lower()
+        and 'nav' not in f.lower()
+    ])
+    return html_files
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -124,8 +135,17 @@ def main():
     z = zipfile.ZipFile(epub_path)
 
     # Get ordered file list and titles
-    spine_files = get_spine_order(z)
+    try:
+        spine_files = get_spine_order(z)
+    except (ValueError, KeyError):
+        spine_files = []
     toc_titles = get_toc_titles(z)
+
+    # Fallback: if spine parsing failed, scan all HTML files in zip
+    if not spine_files:
+        spine_files = get_html_files_fallback(z)
+        if spine_files:
+            print(f"[fallback] Spine parsing returned 0 files, scanning zip for HTML: found {len(spine_files)}")
 
     # Build chapter list with titles
     chapters = []

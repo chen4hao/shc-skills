@@ -15,7 +15,9 @@ video_id = sys.argv[3] if len(sys.argv) > 3 else ""
 removed_count = 0
 if proj_dir:
     prefix = f"{video_id}_" if video_id else ""
-    for pattern in [f"{prefix}zh_batch_*.srt", f"{prefix}en_batch_*.srt"]:
+    for pattern in [f"{prefix}zh_batch_*.srt", f"{prefix}en_batch_*.srt",
+                     f"{prefix}en_gap_*.srt", f"{prefix}zh_gap_*.srt",
+                     f"{prefix}prompt_batch_*.txt", f"{prefix}agent_config.json"]:
         for f in glob.glob(os.path.join(proj_dir, pattern)):
             os.remove(f)
             removed_count += 1
