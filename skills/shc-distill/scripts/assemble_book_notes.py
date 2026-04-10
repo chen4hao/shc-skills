@@ -14,13 +14,18 @@ its final assistant message. This script:
      for the prologue (smallest ch### index in the set).
 
 Usage:
-    uv run python3 assemble_book_notes.py TASKS_DIR DEST_DIR FILENAME_PREFIX
+    uv run python3 assemble_book_notes.py TASKS_DIR DEST_DIR FILENAME_PREFIX [--use-h1]
 
 Example:
     uv run python3 assemble_book_notes.py \\
         /private/tmp/claude-501/.../tasks \\
         /Users/me/notes/Reeves-Wiedeman \\
-        2026-04-Billion-Dollar-Loser
+        2026-04-Billion-Dollar-Loser --use-h1
+
+The --use-h1 flag reads chapter numbers from the H1 header '# Ch{N}: {Title}'
+in each subagent's output, instead of deriving them from epub txt file indices.
+This avoids chapter number offset when epub files include non-content chapters
+(dedication, TOC, etc.) before the first real chapter.
 """
 from __future__ import annotations
 
@@ -102,6 +107,13 @@ def main() -> int:
         default="Prologue",
         help="Tag for the lowest-index chapter (default 'Prologue')",
     )
+    ap.add_argument(
+        "--use-h1",
+        action="store_true",
+        default=False,
+        help="Parse '# Ch{N}: {Title}' from output H1 for chapter number and name "
+             "(instead of deriving from epub txt filename index)",
+    )
     args = ap.parse_args()
 
     if not os.path.isdir(args.tasks_dir):
@@ -129,29 +141,50 @@ def main() -> int:
         print("error: no usable task outputs found", file=sys.stderr)
         return 1
 
-    # Phase 2: normalize chapter numbers — lowest idx becomes 0 (prologue).
-    min_idx = min(r[0] for r in raw_records)
+    # Phase 2: assign chapter numbers.
+    # --use-h1 mode: parse `# Ch{N}: {Title}` from the output H1 line.
+    # Default mode: normalize by subtracting the minimum epub index (lowest → 0).
+    use_h1 = getattr(args, "use_h1", False)
     by_chapter: dict[int, tuple[str, str]] = {}
-    for idx, raw_name, text in raw_records:
-        num = idx - min_idx
-        # Strip "Chapter One" / "Chapter Twenty-Four" prefix from raw filename name.
-        name = re.sub(r"^Chapter\s+[\w-]+\s*", "", raw_name, flags=re.I).strip()
-        if not name:
-            name = raw_name
-        # Prefer the longest text on collision (likely the most complete).
-        if num in by_chapter and len(by_chapter[num][1]) >= len(text):
-            continue
-        by_chapter[num] = (name, text)
+
+    if use_h1:
+        for idx, raw_name, text in raw_records:
+            clean = strip_preamble(text)
+            h1_match = re.match(r"^#\s+Ch(\d+):\s*(.+)", clean)
+            if h1_match:
+                num = int(h1_match.group(1))
+                name = h1_match.group(2).strip()
+            else:
+                # Fallback: use epub index offset
+                if "_min_idx" not in dir():
+                    _min_idx = min(r[0] for r in raw_records)
+                num = idx - _min_idx
+                name = re.sub(r"^Chapter\s+[\w-]+\s*", "", raw_name, flags=re.I).strip() or raw_name
+            if num in by_chapter and len(by_chapter[num][1]) >= len(text):
+                continue
+            by_chapter[num] = (name, text)
+    else:
+        min_idx = min(r[0] for r in raw_records)
+        for idx, raw_name, text in raw_records:
+            num = idx - min_idx
+            # Strip "Chapter One" / "Chapter Twenty-Four" prefix from raw filename name.
+            name = re.sub(r"^Chapter\s+[\w-]+\s*", "", raw_name, flags=re.I).strip()
+            if not name:
+                name = raw_name
+            # Prefer the longest text on collision (likely the most complete).
+            if num in by_chapter and len(by_chapter[num][1]) >= len(text):
+                continue
+            by_chapter[num] = (name, text)
 
     # Phase 3: write files.
     written: list[str] = []
     for num in sorted(by_chapter):
         name, text = by_chapter[num]
-        if num == 0:
+        if num == 0 and not use_h1:
             ch_tag = f"Ch00-{args.prologue_name}"
             slug = ""
         else:
-            ch_tag = f"Ch{num:02d}"
+            ch_tag = f"Ch{num}"
             slug = slugify(name)
         fname = f"{args.prefix}-{ch_tag}"
         if slug:
