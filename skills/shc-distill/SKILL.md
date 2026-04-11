@@ -54,7 +54,7 @@ description: >
      3. **WebSearch**：用作者名稱和推文關鍵字搜尋，從搜尋結果中拼湊內容
    - 若最終仍無法取得完整內容，在筆記開頭註明資料來源的限制。
 2. **大型內容分段處理**（條件步驟）：若內容超過 50 頁（PDF/epub 書籍），進入分段處理流程（見下方「大型內容分段處理規則」）。此步驟會取代步驟 3-6，改為並行萃取各分段並產出彙總筆記。
-3. **字幕擷取**（條件步驟）：若來源是影片或 podcast 的訪談/對話內容，執行字幕擷取流程（見下方「字幕擷取規則」）。**必須**產出三個 SRT 字幕檔：`.en.srt`（英文）、`.zh-tw.srt`（繁體中文）、`.en&cht.srt`（中英雙語）。完整流程：下載 → 去重 → 翻譯補全 → 合併 → 驗證。
+3. **字幕擷取**（條件步驟）：若來源是影片或 podcast 的訪談/對話內容，執行字幕擷取流程（見下方「字幕擷取規則」）。**預設**產出三個 SRT 字幕檔：`.en.srt`（英文）、`.zh-tw.srt`（繁體中文）、`.en&cht.srt`（中英雙語）。完整流程：下載 → 去重 → 翻譯補全 → 合併 → 驗證。**例外：純中文來源**（Bilibili 等中國平台、或 Whisper 偵測為 `zh`）**預設只產 `.zh-tw.srt` 單檔**，跳過 ZH→EN 翻譯 pipeline（見下方「影音與字幕擷取規則 → 純中文來源特例」）。**例外：多 P playlist**（如 Bilibili anthology >3 P）走「多 P 分段流程」，每個分 P 獨立處理（見下方「多 P playlist 特例」）。
 4. **適用性評估**：通讀全文後，先判斷每個輸出區塊是否有足夠素材（見下方「區塊適用性判斷」）。
 5. **深度萃取**：根據下方的輸出格式，對每個適用區塊進行深度分析並萃取內容精華。
 6. **輸出結果**：依序輸出所有適用區塊，省略不適用的區塊。
@@ -62,17 +62,22 @@ description: >
 
 ## 大型內容分段處理規則
 
-本步驟僅在來源為**大型文件（PDF/epub 書籍，超過 50 頁）**時執行。一般網頁文章、影片、podcast 跳過此步驟。
+本步驟在來源為**大型內容**時執行。一般網頁文章、短影片跳過此步驟。
 
 ### 判斷邏輯
 
+凡符合任一條件即進入分段處理流程：
+
 ```
-來源是否為本地 PDF/epub 檔案？
-├─ 否 → 跳過，繼續正常流程
-└─ 是 → 總頁數是否超過 50 頁？
-    ├─ 否 → 跳過，當作一般文章處理
-    └─ 是 → 進入分段處理流程
+是否屬於以下任一種類？
+├─ 本地 PDF/epub 書籍，且總頁數 > 50 頁                → 進入
+├─ 多 P playlist 影片，且 P 數 > 3                       → 進入（每個 P 一段）
+├─ 單一長訪談/演講，且 STT 後原文總行數 > 2000 行          → 進入（按時間切 30-60 分鐘/段）
+├─ 單一長文章/文件，且總字元 > 60000 字                  → 進入
+└─ 以上皆非                                               → 跳過，走一般流程
 ```
+
+**核心原則**：任何單次丟進主 context 會超過 ~30K tokens 原文的來源都該走分段流程——主代理只做 assembly 與跨段精選，不吞原文。2026-04-11 樊登 11 本書 distill 教訓：把 3157 行中文 TXT 全讀進主 context 是反模式，應派子代理分章處理。
 
 ### 分段處理流程
 
@@ -333,10 +338,48 @@ description: >
 本步驟僅在來源為**影片（YouTube 等）或 podcast 的訪談/對話內容**時執行。純文字文章跳過此步驟。
 
 **最終目標**：
-1. 產出**三個 SRT 字幕檔**——這是**硬性要求**：
+1. **預設**產出**三個 SRT 字幕檔**：
    - `*.en.srt` — 純英文字幕
    - `*.zh-tw.srt` — 純繁體中文字幕
    - `*.en&cht.srt` — 中英雙語字幕（每條字幕兩行：英文在上、繁體中文在下）
+
+### 純中文來源特例（預設跳過 EN 翻譯）
+
+若來源為**純中文內容**（判斷依據見下），**預設只產出一個 `.zh-tw.srt` 檔**，跳過整個 ZH→EN 翻譯 pipeline。使用者明確要求英文版才補做翻譯。
+
+**判斷純中文來源的依據**（任一成立即視為純中文）：
+- URL 為 Bilibili（`bilibili.com`、`b23.tv`）
+- URL 為中國 podcast 平台（`ximalaya.com`、`lizhi.fm`、`qingting.fm`、`xiaoyuzhoufm.com`）
+- Whisper STT 偵測到的語言為 `zh`
+- 使用者明確表示內容為中文演講/訪談/podcast
+
+**理由**：EN 翻譯 pipeline（split_batches → 11 個翻譯子代理並行 → extract → combine → merge）對純中文來源零價值——使用者讀中文筆記，英文 SRT 不會被看，卻耗用 ~14 分鐘 + 大量 API 呼叫。2026-04-11 樊登 11 本書 distill 的實測教訓。
+
+**輸出調整**：
+- 純中文來源跳過步驟 C（翻譯）與步驟 D（合併三檔），直接把清理後的 `.zh-tw.clean.srt` 重命名為最終 `.zh-tw.srt`
+- markdown 筆記 metadata 只列 `.zh-tw.srt` 一個字幕檔
+
+### 多 P playlist 特例（Bilibili anthology 等）
+
+yt-dlp 對 Bilibili BV URL 預設會下載**整個 anthology**（多 P 影片）。若 `download.py` 輸出出現「Downloading playlist: ...」與「Downloading item X of N」，代表這是多 P 來源。
+
+**判斷邏輯**：
+- **N ≤ 3 P**：視為單一影片處理（concat 成 master SRT 沒問題，時間軸損失可接受）
+- **N > 3 P**：走「多 P 分段流程」——每個分 P 獨立處理成一組 SRT + 獨立萃取，再產出彙總筆記
+
+**多 P 分段流程**（N > 3）：
+1. STT：用 `$SCRIPTS/multi_part_handler.py stt` 對所有分 P 批次執行 whisper
+2. SRT 不 concat：**禁止**拼接成虛構 master SRT（2026-04-11 教訓：沒有合併影片，虛構時間軸對不到任何實體）
+3. 萃取筆記：若分 P 內容差異大（每個分 P 是一個獨立主題/章節），**走「大型內容分段處理」流程**——為每個分 P 派一個子代理萃取，最後主代理寫彙總筆記
+4. SRT 檔命名：`{prefix}-p01.zh-tw.srt`、`{prefix}-p02.zh-tw.srt` ... `-p{N}.zh-tw.srt`（每個分 P 獨立），**不產生**單一合併 SRT
+5. 影音檔命名：`{prefix}-p01.mp4` ... `-p{N}.mp4`，統一存到 `download/`，用 `copy_files.py --multi-part` 或 `multi_part_handler.py copy` 批次複製
+
+**preflight 快速檢測**：
+```bash
+# 只抓前 1 P 的 metadata 判斷 playlist 規模
+yt-dlp --cookies-from-browser chrome --dump-single-json --playlist-end 1 "$URL"
+```
+若 `entries` 陣列長度 > 3，先告知使用者「偵測到 N P playlist」再繼續（不需要等使用者回覆，直接繼續；僅告知）。
 
 ### 判斷邏輯
 
@@ -358,6 +401,18 @@ URL 是否為影片/podcast？
 為避免權限系統和安全啟發式檢查阻擋，執行 Bash 指令時遵守以下規則：
 
 **腳本目錄**：所有 Python 腳本已預先存在於 `/Users/chen4hao/Workspace/aiProjects/shc-skills/skills/shc-distill/scripts/`（以下簡稱 `$SCRIPTS`）。**不需要用 Write 工具建立腳本**，直接用 Bash 執行即可。
+
+**多 P 影片專用腳本**：處理 Bilibili playlist 等多 P 來源一律用 `$SCRIPTS/multi_part_handler.py`，不要自寫 inline driver：
+```bash
+# 對所有 {TEMP}/{BVID}_p*.mp4 批次執行 Whisper STT（中文）
+uv run python3 $SCRIPTS/multi_part_handler.py stt "{TEMP}" "{BVID}" --language zh
+
+# 批次複製 MP4 到 download/，命名為 {prefix}-p01.mp4 ~ -p{N}.mp4
+uv run python3 $SCRIPTS/multi_part_handler.py copy "{TEMP}" "{DOWNLOAD_DIR}" "{prefix}" "{BVID}"
+
+# 批次複製 .zh-tw.clean.srt 到專案目錄，命名為 {prefix}-p01.zh-tw.srt ~ -p{N}.zh-tw.srt
+uv run python3 $SCRIPTS/multi_part_handler.py copy-srt "{TEMP}" "{PROJECT_DIR}" "{prefix}" "{BVID}"
+```
 
 - **禁止 `python3 -c '...'`** 和 **heredoc**——會觸發安全啟發式警告。
 - **禁止使用複合命令**（`&&`、`||`、`;`、`|`）——每個工具呼叫應獨立發出。
@@ -398,6 +453,8 @@ YouTube 自動字幕 clean 後常達 15-20k tokens，一次 Read 會爆 10k toke
 ```bash
 uv run python3 $SCRIPTS/download.py "/tmp/distill-{VIDEO_ID}" "$URL"
 ```
+
+**⚠️ Bilibili BV URL 特別提醒**：Bilibili 的 `BV...` 網址若為多 P anthology，yt-dlp 預設會**下載全部 P**（已知問題）。`download.py` 目前未加 `--no-playlist`，因此多 P 影片會產出 `{BVID}_p1.mp4`、`{BVID}_p2.mp4`、... 等多檔；stdout 會印 `Downloading playlist: {name}` 和 `Downloading item X of N`。看到這兩行時代表是多 P 來源——走「多 P playlist 特例」流程（見上方），用 `multi_part_handler.py` 處理後續。
 
 **判斷後續流程**：`download.py` 的 stdout 已包含所有判斷資訊（Title、Channel、Upload date、Duration、Description、`SUBS_AVAILABLE`），**不需要額外 `ls` 確認**。根據 `SUBS_AVAILABLE` 判斷：
 - `YES`：有字幕，繼續步驟 B（去重清理）。**無影音檔需要處理。**
