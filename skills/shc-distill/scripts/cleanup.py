@@ -15,9 +15,14 @@ video_id = sys.argv[3] if len(sys.argv) > 3 else ""
 removed_count = 0
 if proj_dir:
     prefix = f"{video_id}_" if video_id else ""
-    for pattern in [f"{prefix}zh_batch_*.srt", f"{prefix}en_batch_*.srt",
-                     f"{prefix}en_gap_*.srt", f"{prefix}zh_gap_*.srt",
-                     f"{prefix}prompt_batch_*.txt", f"{prefix}agent_config.json"]:
+    # 翻譯中間檔（批次、gap、prompt、agent config）
+    batch_patterns = [f"{prefix}zh_batch_*.srt", f"{prefix}en_batch_*.srt",
+                      f"{prefix}en_gap_*.srt", f"{prefix}zh_gap_*.srt",
+                      f"{prefix}prompt_batch_*.txt", f"{prefix}agent_config.json"]
+    # srt_to_text.py 產出的純文字檔 + 主代理若把原始 clean SRT 複製進專案目錄
+    # 所留下的殘餘檔（檔名含 VIDEO_ID，不是以 prefix="{VIDEO_ID}_" 開頭）
+    aux_patterns = [f"{video_id}*.clean.txt", f"{video_id}*.clean.srt"] if video_id else []
+    for pattern in batch_patterns + aux_patterns:
         for f in glob.glob(os.path.join(proj_dir, pattern)):
             os.remove(f)
             removed_count += 1
