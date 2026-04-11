@@ -28,6 +28,7 @@ basename = os.path.splitext(os.path.basename(audio_path))[0]
 os.makedirs(output_dir, exist_ok=True)
 
 # === Step 1: 音量偵測 ===
+duration_sec = None  # 初始化，供後續動態 timeout 計算使用
 print("=== Step 1: 音量偵測 ===")
 
 # 將影音轉為 WAV 以分析音量（使用 ffmpeg）
@@ -95,8 +96,15 @@ if args.language:
     cmd.extend(['--language', args.language])
 cmd.append(audio_path)
 
+# 動態 timeout：max(600s, 50% 音訊時長) — 避免長音訊誤觸 timeout
+if duration_sec is not None:
+    whisper_timeout = max(600, int(duration_sec * 0.5))
+    print(f"  Whisper timeout: {whisper_timeout}s（音訊時長 {duration_sec:.0f}s，取 50%）")
+else:
+    whisper_timeout = 7200  # Fallback: 2 小時
+    print(f"  Whisper timeout: {whisper_timeout}s（時長未知，使用 2 小時 fallback）")
 print(f"  執行: {' '.join(cmd)}")
-result = subprocess.run(cmd, timeout=600)
+result = subprocess.run(cmd, timeout=whisper_timeout)
 if result.returncode != 0:
     print("❌ mlx_whisper 執行失敗")
     sys.exit(1)

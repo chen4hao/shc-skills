@@ -45,6 +45,28 @@ def strip_preamble(text: str) -> str:
     return text
 
 
+def clean_html_entities(text: str) -> str:
+    """Decode the HTML entities sonnet subagents routinely emit despite prompts.
+
+    Subagents (especially sonnet) reliably output `&gt;`, `&lt;`, `&amp;` inside
+    blockquotes and <details> blocks even when explicitly told to use raw chars.
+    This is a persistent, documented failure mode — fix it here so every
+    assemble run produces clean markdown without needing post-hoc sed cleanup.
+
+    Order matters: decode `&amp;` LAST to avoid double-decoding sequences like
+    `&amp;gt;` → `&gt;` → `>`.
+    """
+    return (
+        text
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+    )
+
+
 def slugify(s: str, max_len: int = 40) -> str:
     s = re.sub(r"[^\w\s-]", "", s).strip()
     s = re.sub(r"[\s_]+", "-", s)
@@ -114,6 +136,13 @@ def main() -> int:
         help="Parse '# Ch{N}: {Title}' from output H1 for chapter number and name "
              "(instead of deriving from epub txt filename index)",
     )
+    ap.add_argument(
+        "--pattern",
+        default=r"ch(\d{3})_([A-Za-z0-9_]+?)\.txt",
+        help="Regex to match in subagent prompt (first_user). Group 1 = chapter/segment "
+             "number; Group 2 (optional) = name. Default matches epub 'ch###_NAME.txt'. "
+             r"For video segments use e.g. 'batch_(\d+)\.txt'.",
+    )
     args = ap.parse_args()
 
     if not os.path.isdir(args.tasks_dir):
@@ -129,12 +158,13 @@ def main() -> int:
         if not text or len(text) < args.min_text:
             skipped.append((os.path.basename(fp), f"text<{args.min_text}"))
             continue
-        m = re.search(r"ch(\d{3})_([A-Za-z0-9_]+?)\.txt", first)
+        m = re.search(args.pattern, first)
         if not m:
-            skipped.append((os.path.basename(fp), "no ch###_*.txt in prompt"))
+            skipped.append((os.path.basename(fp), f"pattern {args.pattern!r} not matched in prompt"))
             continue
-        idx = int(m.group(1))
-        raw_name = m.group(2).replace("_", " ").strip()
+        groups = m.groups()
+        idx = int(groups[0])
+        raw_name = (groups[1] if len(groups) >= 2 and groups[1] else "").replace("_", " ").strip()
         raw_records.append((idx, raw_name, text))
 
     if not raw_records:
@@ -191,7 +221,7 @@ def main() -> int:
             fname += f"-{slug}"
         fname += ".md"
         out = os.path.join(args.dest_dir, fname)
-        clean_text = strip_preamble(text)
+        clean_text = clean_html_entities(strip_preamble(text))
         with open(out, "w", encoding="utf-8") as f:
             f.write(clean_text)
         if not clean_text.startswith("# "):

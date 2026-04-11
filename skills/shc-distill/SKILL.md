@@ -1,18 +1,6 @@
 ---
-name: shc-distill
-description: >
-  萃取網路文章、訪談、演講、影片、podcast、電子書(PDF/epub) 的學習重點精華，整理成結構化 markdown 筆記並儲存。
-  當來源為訪談影片或 podcast 時，會自動擷取完整字幕並存為三個 SRT 字幕檔：英文(*.en.srt)、繁體中文(*.zh-tw.srt)、中英雙語(*.en&cht.srt)。
-  當來源為大型內容（如電子書 PDF/epub，超過 50 頁）時，自動分段處理並用子代理並行萃取各段，最後產出分段筆記與彙總筆記。
-  當使用者提供 URL 或本地檔案路徑並要求萃取重點、整理筆記、提取學習精華、summarize key takeaways 時觸發。
-  Use when user shares a URL or local file path and wants to extract insights, distill key takeaways,
-  summarize learnings, or create study notes from articles, interviews, talks,
-  videos, podcasts, essays, blog posts, or books (PDF/epub). When the source is an interview video
-  or podcast, automatically extracts and saves three SRT subtitle files: English
-  (*.en.srt), Traditional Chinese (*.zh-tw.srt), and bilingual (*.en&cht.srt).
-  When the source is a large document (e.g., book PDF/epub over 50 pages), automatically
-  segments content and processes each segment in parallel using subagents, producing
-  per-segment notes and a consolidated summary.
+description: "萃取網路文章、訪談、演講、影片、podcast、電子書(PDF/epub) 的學習重點精華，整理成結構化 markdown 筆記並儲存。當來源為訪談影片或 podcast 時，會自動擷取完整字幕並存為三個 SRT 字幕檔：英文(*.en.srt)、繁體中文(*.zh-tw.srt)、中英雙語(*.en&cht.srt)。當來源為大型內容（如電子書 PDF/epub，超過 50 頁）時，自動分段處理並用子代理並行萃取各段，最後產出分段筆記與彙總筆記。當使用者提供 URL 或本地檔案路徑並要求萃取重點、整理筆記、提取學習精華、summarize key takeaways 時觸發。Use when user shares a URL or local file path and wants to extract insights, distill key takeaways, summarize learnings, or create study notes from articles, interviews, talks, videos, podcasts, essays, blog posts, or books (PDF/epub). When the source is an interview video or podcast, automatically extracts and saves three SRT subtitle files: English (*.en.srt), Traditional Chinese (*.zh-tw.srt), and bilingual (*.en&cht.srt). When the source is a large document (e.g., book PDF/epub over 50 pages), automatically segments content and processes each segment in parallel using subagents, producing per-segment notes and a consolidated summary."
+argument-hint: "[URL, local file path, or content source]"
 ---
 
 # 學習萃取專家 | Distill
@@ -376,10 +364,13 @@ yt-dlp 對 Bilibili BV URL 預設會下載**整個 anthology**（多 P 影片）
 
 **preflight 快速檢測**：
 ```bash
-# 只抓前 1 P 的 metadata 判斷 playlist 規模
-yt-dlp --cookies-from-browser chrome --dump-single-json --playlist-end 1 "$URL"
+# 只抓 playlist 規模與標題，不拉完整 format JSON（前者 ~100 bytes，後者 ~50 KB）
+yt-dlp --cookies-from-browser chrome --flat-playlist --playlist-end 1 \
+  -O "n_entries=%(playlist_count|1)s|title=%(title)s|duration=%(duration)s" "$URL"
 ```
-若 `entries` 陣列長度 > 3，先告知使用者「偵測到 N P playlist」再繼續（不需要等使用者回覆，直接繼續；僅告知）。
+若 `n_entries > 3`，先告知使用者「偵測到 N P playlist」再繼續（不需要等使用者回覆，直接繼續；僅告知）。
+
+**注意**：一般非多 P 嫌疑的 URL 不需要跑此 preflight——`download.py` 內建的 `--dump-single-json` preflight 會在 stdout 印 `Downloading playlist` 等資訊，足以判斷。**只有已知 Bilibili BV URL 或其他多 P 嫌疑源才需要此外部 preflight**。
 
 ### 判斷邏輯
 
@@ -458,13 +449,32 @@ uv run python3 $SCRIPTS/download.py "/tmp/distill-{VIDEO_ID}" "$URL"
 
 **判斷後續流程**：`download.py` 的 stdout 已包含所有判斷資訊（Title、Channel、Upload date、Duration、Description、`SUBS_AVAILABLE`），**不需要額外 `ls` 確認**。根據 `SUBS_AVAILABLE` 判斷：
 - `YES`：有字幕，繼續步驟 B（去重清理）。**無影音檔需要處理。**
-- `NO`：無字幕但有影音檔，**跳過步驟 B**，改用 `whisper_stt.py` 產生字幕：
+- `NO`：無字幕但有影音/音訊檔，**跳過步驟 B**，改用 `whisper_stt_long.py` 產生字幕：
 ```bash
-uv run python3 $SCRIPTS/whisper_stt.py "/tmp/distill-{VIDEO_ID}/{VIDEO_ID}.mp4" "/tmp/distill-{VIDEO_ID}" --language {語言代碼}
+# 長音訊首選（自動分段 + 合併 + OpenCC 繁轉）
+uv run python3 $SCRIPTS/whisper_stt_long.py "/tmp/distill-{VIDEO_ID}/{VIDEO_ID}.{ext}" "/tmp/distill-{VIDEO_ID}" --language {語言代碼}
 ```
-  腳本會自動：(1) ffmpeg 偵測音量分佈，動態調整 hallucination-silence-threshold；(2) mlx_whisper 轉錄；(3) 中文影片自動用 OpenCC s2twp 簡轉繁，產出 `.zh-tw.clean.srt`。
-  `--language` 常用值：`zh`（中文）、`en`（英文）。若不確定語言可省略，由 Whisper 自動偵測。
-  **Whisper 產生的 SRT 不需要步驟 B 去重**（無漸進式顯示問題），但 `whisper_stt.py` 已內建 Step 2.5 自動清理 hallucination（連續重複條目 ≥3 條只保留第一條並重新編號）。若使用舊版腳本，可手動執行 `uv run python3 $SCRIPTS/clean_hallucination.py "{srt_path}"` 清理後再繼續。清理完成後直接跳到步驟 C。
+  **此腳本是長音訊的正確入口**，自動處理：
+  1. `ffprobe` 偵測時長：>30 分鐘自動分段（`--segment-minutes` 預設 45）
+  2. `ffmpeg -c copy` 零重編碼切段（避免 mlx_whisper 的 subprocess timeout 問題）
+  3. 每段獨立 mlx_whisper，**避免 `--condition-on-previous-text` 的幻覺傳遞**
+  4. 以各段實際時長累積 offset 合併 → 時間軸精準
+  5. 中文（`--language zh`）自動用 OpenCC s2twp 繁轉，產出 `{basename}.zh-tw.clean.srt`
+
+  **長音訊（>30 min）必須背景執行**：用 `run_in_background: true` 發 Bash 呼叫，系統會在完成後自動通知；**嚴禁輪詢**。
+
+  **短音訊（<30 min）也可以用此腳本**（走 single-shot 模式），或退回舊版 `whisper_stt.py`（內建 Step 2.5 幻覺清理但 subprocess timeout 寫死 600s）。
+
+  **STT 完成後字元頻次預檢**（見 `feedback_batch_preflight_before_subagents.md`）：
+```bash
+awk '{print length}' {txt_file} | sort -rn | uniq -c | head -5
+```
+  若最頻行長 ≤3 且佔比 >50%，該段大機率是 Whisper 幻覺區，需額外處理。清理完成後直接跳到步驟 C。
+
+**等待期間的生產性動作**：Whisper 背景執行時（長音訊約 3-10 分鐘），主代理**不要閒置等通知**。立刻：
+1. 用 Read 取 `{VIDEO_ID}.info.json` 前 5 行取得 title、upload_date、uploader、description（不需要讀 30+ 行，metadata 在開頭即可）
+2. 建立目錄、預寫 markdown 筆記的 metadata block（標題、作者、URL、來源、日期、核心論點佔位）
+3. 規劃 Read txt 的分塊計畫（`N = ceil(total_lines / 550)`，同訊息並行發 N 個 Read）
 
 > **VTT vs SRT**：`--convert-subs "srt"` 會自動將 VTT 轉為 SRT。若 yt-dlp 因中途錯誤而只產出 `.vtt` 檔，**不需要額外用 ffmpeg 轉檔**——步驟 B 的 dedup.py 已能直接處理 VTT 和 SRT 兩種格式。
 

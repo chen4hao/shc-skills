@@ -1,18 +1,27 @@
-"""拆分 SRT 字幕為多個翻譯批次 + 產出子代理 prompt 和啟動指令。
+"""拆分 SRT 字幕為多個批次（可選擇產出翻譯 prompt 或純分段）。
 
-用法: uv run python3 split_batches.py <INPUT_SRT> <OUTPUT_DIR> <VIDEO_ID> [NUM_BATCHES] [LANG]
-  INPUT_SRT: 清理後的 SRT 檔案路徑
-  OUTPUT_DIR: 批次檔案輸出目錄（子代理可存取的專案目錄）
-  VIDEO_ID: 影片 ID（用於批次檔名前綴，避免並行會話覆蓋）
-  NUM_BATCHES: 批次數量（預設 8，每批 ~300 條避免子代理撞輸出上限）
-  LANG: 來源語言前綴（預設 "en"，中文原文影片用 "zh"）
+用法: uv run python3 split_batches.py <INPUT_SRT> <OUTPUT_DIR> <VIDEO_ID> [NUM_BATCHES] [LANG] [options]
+
+位置參數:
+  INPUT_SRT:     清理後的 SRT 檔案路徑
+  OUTPUT_DIR:    批次檔案輸出目錄（子代理可存取的專案目錄）
+  VIDEO_ID:      影片 ID（用於批次檔名前綴，避免並行會話覆蓋）
+  NUM_BATCHES:   批次數量（預設 8，每批 ~300 條避免子代理撞輸出上限）
+  LANG:          來源語言前綴（預設 "en"，中文原文影片用 "zh"）
+
+選項:
+  --split-by {entry,time}  拆分方式（預設 entry）
+                           entry: 按條目數均分（每批 ~total/N 條，可能時段不均）
+                           time:  按總時長均分（每批 ~total_dur/N 秒，時段一致、條目不均）
+  --split-only             只產 batch SRT 檔，不產翻譯 prompt 和 agent_config.json
+                           用於純分段萃取流程（如影片 distill 分段）
 
 產出：
-  {VIDEO_ID}_{LANG}_batch_{N}.srt      — 各批次 SRT 檔
-  {VIDEO_ID}_prompt_batch_{N}.txt      — 各批次的完整子代理 prompt
-  {VIDEO_ID}_agent_config.json         — Agent 啟動設定（含 prompt 路徑）
+  {VIDEO_ID}_{LANG}_batch_{N}.srt   — 各批次 SRT 檔（一律產出）
+  {VIDEO_ID}_prompt_batch_{N}.txt   — 各批次翻譯 prompt（僅在非 --split-only）
+  {VIDEO_ID}_agent_config.json      — Agent 啟動設定（僅在非 --split-only）
 """
-import re, os, sys, math, json
+import re, os, sys, math, json, argparse
 
 # ── Prompt 模板 ──────────────────────────────────────────────
 
@@ -91,16 +100,66 @@ META_PROMPT = """\
 Prompt 檔案路徑：{prompt_path}"""
 
 
+# ── 拆分函式 ───────────────────────────────────────────────
+
+def _parse_srt_time(ts):
+    """Parse SRT timestamp 'HH:MM:SS,mmm' to seconds (float)."""
+    ts = ts.strip()
+    h, m, rest = ts.split(':')
+    s, ms = rest.split(',')
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+
+def _block_time(block, which='start'):
+    """Extract start or end time (seconds) from an SRT block."""
+    for line in block.strip().split('\n'):
+        if '-->' in line:
+            parts = line.split('-->')
+            return _parse_srt_time(parts[0 if which == 'start' else 1])
+    return 0.0
+
+
+def split_by_entry(blocks, num_batches):
+    """按條目數均分：每批 ~total/N 條（原始做法）。"""
+    total = len(blocks)
+    per_batch = math.ceil(total / num_batches)
+    return [blocks[i * per_batch:(i + 1) * per_batch] for i in range(num_batches)]
+
+
+def split_by_time(blocks, num_batches):
+    """按總時長均分：每批 ~total_dur/N 秒，時段一致但條目數可能不均。"""
+    if not blocks:
+        return [[] for _ in range(num_batches)]
+
+    total_dur = _block_time(blocks[-1], 'end')
+    if total_dur <= 0:
+        return split_by_entry(blocks, num_batches)
+
+    seg_dur = total_dur / num_batches
+    batches = [[] for _ in range(num_batches)]
+    for b in blocks:
+        bs = _block_time(b, 'start')
+        seg_idx = min(int(bs / seg_dur), num_batches - 1)
+        batches[seg_idx].append(b)
+    return batches
+
+
 # ── 主邏輯 ───────────────────────────────────────────────────
 
-def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en"):
+def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en",
+              split_by="entry", split_only=False):
     with open(input_path) as f:
         content = f.read()
     blocks = [b.strip() for b in re.split(r'\n\n+', content.strip()) if '-->' in b]
     total = len(blocks)
-    per_batch = math.ceil(total / num_batches)
 
-    # 翻譯方向
+    # 依 split_by 選擇拆分方式
+    if split_by == "time":
+        split_blocks = split_by_time(blocks, num_batches)
+    else:
+        split_blocks = split_by_entry(blocks, num_batches)
+
+    # 翻譯方向（僅在非 --split-only 時使用）
     if lang == "en":
         target_lang = "zh"
         prompt_template = PROMPT_EN_TO_ZH
@@ -114,17 +173,29 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en"):
 
     batches_info = []
 
-    for i in range(num_batches):
-        batch = blocks[i * per_batch : (i + 1) * per_batch]
+    for i, batch in enumerate(split_blocks):
         if not batch:
             continue
         batch_num = i + 1
 
-        # 寫入批次 SRT 檔
+        # 寫入批次 SRT 檔（一律產出）
         srt_path = os.path.join(output_dir, f"{video_id}_{lang}_batch_{batch_num}.srt")
         with open(srt_path, 'w') as f:
             for block in batch:
                 f.write(f"{block}\n\n")
+
+        # 顯示批次資訊（含時間範圍）
+        if batch:
+            ts_start = _block_time(batch[0], 'start')
+            ts_end = _block_time(batch[-1], 'end')
+            time_info = f"[{int(ts_start // 60):02d}:{int(ts_start % 60):02d}–{int(ts_end // 60):02d}:{int(ts_end % 60):02d}]"
+        else:
+            time_info = ""
+        print(f"  Batch {batch_num}: {len(batch)} entries {time_info} -> {os.path.basename(srt_path)}")
+
+        # --split-only: 只產 SRT 檔，跳過 prompt 產生
+        if split_only:
+            continue
 
         # 產出完整子代理 prompt
         prompt_text = prompt_template.format(
@@ -147,9 +218,15 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en"):
             "agent_prompt": meta_prompt,
         })
 
-        print(f"  Batch {batch_num}: {len(batch)} entries -> {os.path.basename(srt_path)}")
+    non_empty = sum(1 for b in split_blocks if b)
 
-    # 寫入 agent config JSON
+    # --split-only: 收尾訊息
+    if split_only:
+        print(f"\n[--split-only] 拆分完成：{total} 條字幕 → {non_empty} 個批次（{split_by}-based，不產 prompt）")
+        print(f"  批次檔：{output_dir}/{video_id}_{lang}_batch_*.srt")
+        return
+
+    # Write agent config JSON
     config = {
         "video_id": video_id,
         "source_lang": lang,
@@ -157,6 +234,7 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en"):
         "direction": direction_desc,
         "total_entries": total,
         "num_batches": len(batches_info),
+        "split_by": split_by,
         "agent_settings": {
             "model": "sonnet",
             "mode": "dontAsk",
@@ -168,8 +246,8 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en"):
     with open(config_path, 'w') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-    # ── 策略 B：phase-specific 提醒 ─────────────────────────
-    print(f"\n拆分完成：{total} 條字幕 → {len(batches_info)} 個批次（{direction_desc}）")
+    # phase-specific 提醒
+    print(f"\n拆分完成：{total} 條字幕 → {len(batches_info)} 個批次（{direction_desc}，{split_by}-based）")
     print("════════════════════════════════════════════════════════")
     print(f"⚠️  下一步：在【同一個訊息】中啟動全部 {len(batches_info)} 個 Agent")
     print(f"   設定檔（含各批次 prompt 路徑）：{config_path}")
@@ -181,7 +259,35 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en"):
     print("════════════════════════════════════════════════════════")
 
 
-video_id = sys.argv[3]
-num_batches = int(sys.argv[4]) if len(sys.argv) > 4 else 8
-lang = sys.argv[5] if len(sys.argv) > 5 else "en"
-split_srt(sys.argv[1], sys.argv[2], video_id, num_batches, lang)
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("input_srt")
+    ap.add_argument("output_dir")
+    ap.add_argument("video_id")
+    # 位置參數 NUM_BATCHES 和 LANG 保留為可選 nargs="?"，維持舊呼叫介面
+    ap.add_argument("num_batches", nargs="?", type=int, default=8,
+                    help="Number of batches (default 8)")
+    ap.add_argument("lang", nargs="?", choices=["en", "zh"], default="en",
+                    help="Source language prefix (default en)")
+    ap.add_argument("--split-by", choices=["entry", "time"], default="entry",
+                    help="Split method (default: entry)")
+    ap.add_argument("--split-only", action="store_true",
+                    help="Only produce batch SRT files, skip translation prompt generation")
+    args = ap.parse_args()
+
+    split_srt(
+        args.input_srt,
+        args.output_dir,
+        args.video_id,
+        num_batches=args.num_batches,
+        lang=args.lang,
+        split_by=args.split_by,
+        split_only=args.split_only,
+    )
+
+
+if __name__ == "__main__":
+    main()
