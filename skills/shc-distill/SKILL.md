@@ -251,21 +251,35 @@ argument-hint: "[URL, local file path, or content source]"
 不要嘗試寫入檔案。將完整筆記直接作為回覆輸出。
 ```
 
-#### 步驟 4：即時 Write + 累積彙總要點（嚴禁囤積）
+#### 步驟 4：收集結果 + 累積彙總要點
 
 - 系統會自動通知子代理完成，**嚴禁輪詢**
-- 在等待期間，準備彙總筆記的框架（標題、章節列表、區塊模板）
-- **每收到一個子代理結果，必須在「同一個訊息」中完成兩件事**：
-  1. Write 該分章筆記到專案目錄
-  2. 將該章的 Top Takeaway / Key Quote 摘要貼進主代理彙總草稿
-- **嚴禁累積超過 2 個未寫入結果** — 一旦上下文壓縮，未寫入內容會永久丟失
-- **🔴 Checkpoint B — 跨輪禁令**：子代理結果到手的「**同一輪訊息**」必須完成 Write，**禁止留到下一輪再寫**。即使該輪已經發了其他工具呼叫，也要把 Write 塞進同一批。一旦該輪結束而內容還在 context，視為高風險狀態（壓縮可能在任何輪次觸發）。
 - **🔴 壓縮 summary 不可信**：若會話經歷過壓縮，summary 宣稱「某段內容仍在 context」一律不採信。下一步必須是「實際驗證磁碟檔案存在」或「重新從原始檔讀取」，禁止盲信。
-- **拼裝多個任務時，優先用 `$SCRIPTS/assemble_book_notes.py`** 從 task .output 目錄一次性產出所有章節檔案，避免每次手寫解析腳本：
+
+**分章筆記寫入：統一用 `assemble_book_notes.py`，嚴禁手動 Write**
+
+task .output 已是持久化儲存（JSONL 檔在磁碟上），`assemble_book_notes.py` 會統一從所有 task output 提取並寫入分章筆記。手動 Write 單章 = 浪費 ~15KB context + 1 個工具呼叫，且後續被 assemble 覆寫。
+
+- ⛔ **Checkpoint B「同輪必寫」規則在有 assemble 腳本時不適用**
+- ⛔ 收到子代理通知時的第一反應必須是「等 assemble」而非「立刻 Write」
+- ✅ 所有子代理完成後，一次性執行 assemble：
   ```bash
   uv run python3 $SCRIPTS/assemble_book_notes.py "{tasks_dir}" "{專案輸出目錄}" "{年份}-{月份}-{書名}" --use-h1
   ```
   **必須加 `--use-h1`**：從子代理輸出的 H1 `# Ch{N}: {Title}` 讀取正確章節號和標題。不加此旗標時，腳本用 epub txt 檔序號（ch005=0），幾乎所有書都會產生章節編號偏移。
+- `assemble_book_notes.py` 內建 `clean_html_entities` 函式，自動清理子代理回傳中的 `&gt;` `&lt;` `&amp;` 等 HTML entity，無需主代理手動剝除。
+
+**等待期生產性工作：彙總骨架漸進填充**
+
+子代理啟動後，主代理**禁止閒置等待**。在啟動子代理的**同一訊息**中，額外發出 Write 呼叫寫入彙總筆記骨架初版。骨架必須包含：
+
+- ✅ Metadata block（書名、作者、出版年、核心論點、分章索引含連結）
+- ✅ 所有必要區塊標題 + `<!-- 待填入 -->` 佔位符
+- ✅ One Page Infograph 區塊標題 + 副標題
+
+每收到一個子代理 completion，在**同一輪訊息**用 **Edit** 工具（非 Write）將該章 Top 1-3 Key Takeaway + Top 1 Key Quote 回填到骨架對應位置。當最後一個子代理完成時，骨架應已有 10-15 條 takeaway、8-10 條 quote 可供精選，最終彙總只需跨章去重、排序、補寫 Infograph。
+
+**反面訊號**：若收到最後一個 completion 時骨架仍只有佔位符，代表整個等待期都在閒置。
 
 #### 步驟 5：產出彙總筆記
 
@@ -288,6 +302,7 @@ argument-hint: "[URL, local file path, or content source]"
 ### 注意事項
 
 - **子代理不寫入，主代理統一寫入**：子代理的 Write 工具極不穩定（即使 `mode: "dontAsk"` 也可能被 sandbox 拒絕，實測 6/6 全部失敗的情況屢見不鮮）。子代理只負責分析與回傳，所有檔案寫入由主代理執行。子代理 prompt 中必須明確說明「不要嘗試寫入檔案」。
+- **子代理 HTML entity 問題**：sonnet 子代理即使在 prompt 中明確禁止，仍高機率回傳 `&gt;`、`&lt;`、`&amp;` 等 HTML entity（實測違規率接近 100%）。**無需主代理手動清理**——`assemble_book_notes.py` 內建 `clean_html_entities` 函式自動處理。若不走 assemble 而手動 Write，則必須在寫入前手動剝除。
 - **epub 提取目標必須是專案輸出目錄**：子代理無法存取 /tmp/，因此 `epub_extract.py --all` 必須直接輸出到專案輸出目錄（如 `/Users/chen4hao/Workspace/aiProjects/infoAggr/{作者}/`）。**嚴禁先提取到 /tmp 再複製**——這會觸發 cp glob sandbox 警告和額外權限提示。
 - **子代理的內容摘要必須充足**：子代理無法讀取 PDF，因此主 context 傳入的摘要必須包含所有關鍵論點、引用原文、具體數據、故事細節。摘要不足會導致子代理的萃取品質下降。對於 epub，子代理可直接讀取 .txt 檔，不需要在 prompt 中傳入摘要。
 - **分段邊界對齊章節**：優先按書的章節自然邊界切分，避免在段落中間切斷。
