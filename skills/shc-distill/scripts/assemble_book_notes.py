@@ -88,6 +88,10 @@ def parse_task_output(path: str) -> tuple[str, str]:
                 continue
             t = obj.get("type")
             msg = obj.get("message", {})
+            # Fallback: newer JSONL format (isSidechain agents) puts role
+            # inside message.role, not at the top level.
+            if t is None:
+                t = msg.get("role")
             content = msg.get("content", [])
             if t == "user" and not first_user:
                 if isinstance(content, str):
@@ -138,7 +142,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--pattern",
-        default=r"ch(\d{3})_([A-Za-z0-9_]+?)\.txt",
+        default=r"ch(\d{3})_(.+?)\.txt",
         help="Regex to match in subagent prompt (first_user). Group 1 = chapter/segment "
              "number; Group 2 (optional) = name. Default matches epub 'ch###_NAME.txt'. "
              r"For video segments use e.g. 'batch_(\d+)\.txt'.",
@@ -178,21 +182,36 @@ def main() -> int:
     by_chapter: dict[int, tuple[str, str]] = {}
 
     if use_h1:
+        _min_idx = min(r[0] for r in raw_records)
+        # Accept both Ch{N} (per-chapter) and Seg{N} (multi-chapter segment) H1s.
+        # Seg is used when epub chapters are coarse XHTML blobs each containing
+        # several book chapters and subagents emit one segment note per blob.
+        h1_tags: dict[int, str] = {}
         for idx, raw_name, text in raw_records:
             clean = strip_preamble(text)
-            h1_match = re.match(r"^#\s+Ch(\d+):\s*(.+)", clean)
-            if h1_match:
-                num = int(h1_match.group(1))
-                name = h1_match.group(2).strip()
-            else:
-                # Fallback: use epub index offset
-                if "_min_idx" not in dir():
-                    _min_idx = min(r[0] for r in raw_records)
+            sections = re.split(r"(?=^#\s+(?:Ch|Seg)\d+:)", clean, flags=re.MULTILINE)
+            sections = [s.strip() for s in sections if s.strip()]
+            matched_any = False
+            for section in sections:
+                h1_match = re.match(r"^#\s+(Ch|Seg)(\d+):\s*(.+)", section)
+                if h1_match:
+                    kind = h1_match.group(1)
+                    num = int(h1_match.group(2))
+                    name = h1_match.group(3).strip()
+                    # Namespace Seg keys separately from Ch to avoid collisions.
+                    key = num + 10000 if kind == "Seg" else num
+                    matched_any = True
+                    if key in by_chapter and len(by_chapter[key][1]) >= len(section):
+                        continue
+                    by_chapter[key] = (name, section)
+                    h1_tags[key] = f"{kind}{num}"
+            if not matched_any:
+                # Fallback: no valid H1 found, use epub index offset
                 num = idx - _min_idx
                 name = re.sub(r"^Chapter\s+[\w-]+\s*", "", raw_name, flags=re.I).strip() or raw_name
-            if num in by_chapter and len(by_chapter[num][1]) >= len(text):
-                continue
-            by_chapter[num] = (name, text)
+                if num in by_chapter and len(by_chapter[num][1]) >= len(text):
+                    continue
+                by_chapter[num] = (name, text)
     else:
         min_idx = min(r[0] for r in raw_records)
         for idx, raw_name, text in raw_records:
@@ -208,11 +227,15 @@ def main() -> int:
 
     # Phase 3: write files.
     written: list[str] = []
+    h1_tags = locals().get("h1_tags", {})
     for num in sorted(by_chapter):
         name, text = by_chapter[num]
         if num == 0 and not use_h1:
             ch_tag = f"Ch00-{args.prologue_name}"
             slug = ""
+        elif num in h1_tags:
+            ch_tag = h1_tags[num]
+            slug = slugify(name)
         else:
             ch_tag = f"Ch{num}"
             slug = slugify(name)

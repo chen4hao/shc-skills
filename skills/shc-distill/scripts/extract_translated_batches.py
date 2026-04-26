@@ -72,16 +72,54 @@ def parse_task_output(path: str) -> tuple[str, list[str]]:
     return first_user, assistant_texts
 
 
+# Meta-text patterns that sonnet subagents emit around self-corrections.
+# If these appear, we strip them so the surrounding SRT-looking text doesn't
+# get polluted, and we rely on last-wins below to let the corrected entries win.
+META_TEXT_PATTERNS = [
+    # Self-correction prefaces
+    r"I (?:realize|notice|see)[^\n]{0,250}?[Ll]et me (?:provide|give|re-?do|correct)[^\n]*\n",
+    r"Looking at (?:the|my)[^\n]{0,100}?(?:again|error|mistake)[^\n]*\n",
+    r"(?:Wait|Hmm|Actually)[,.][^\n]{0,200}?[\n]",
+    # Chinese self-correction prefaces
+    r"整理好的完整\s*SRT[^\n]*\n",
+    r"(?:以下是|以下為)[^\n]{0,50}(?:修正|正確|完整|重新)[^\n]*\n",
+    r"我(?:發現|注意到)[^\n]{0,100}(?:錯誤|問題|偏移)[^\n]*\n",
+    # Markdown fences
+    r"```(?:srt)?\s*\n",
+    r"\n```\s*",
+    # Instruction/outro noise
+    r"(?:翻譯完成|完整的\s*SRT|corrected complete translation)[^\n]*\n",
+]
+
+
+def _strip_meta_text(text: str) -> str:
+    """Remove subagent self-correction prefaces so raw SRT content survives."""
+    for p in META_TEXT_PATTERNS:
+        text = re.sub(p, "", text, flags=re.IGNORECASE)
+    return text
+
+
 def extract_srt_entries_deduped(texts: list[str]) -> dict[int, tuple[str, str]]:
     """Extract SRT entries from ALL assistant texts, deduplicated by entry number.
 
-    Returns {entry_num: (timestamp_line, text_content)} keeping first occurrence.
-    Handles: code fence markers, multiple assistant messages, overlapping entries.
+    Returns {entry_num: (timestamp_line, text_content)} keeping LAST occurrence.
+
+    Why last-wins (not first-wins):
+      Sonnet subagents sometimes emit an initial draft followed by a corrected
+      pass ("I realize I'm making errors... Let me provide the corrected...")
+      where the corrected pass re-outputs a subset of entries. First-wins would
+      keep the buggy draft; last-wins picks up the correction. For the normal
+      "output hit the limit, continue in msg 2" case the two halves don't
+      overlap, so the choice is equivalent.
+
+    Handles: code fence markers, meta-text prefaces, multiple assistant
+    messages, entry self-corrections, overlapping entries.
     """
     entries: dict[int, tuple[str, str]] = {}
     for text in texts:
-        # Clean code fence markers that subagents may include
+        # Clean code fence markers and self-correction prefaces
         text = re.sub(r" *```(?:srt)? *", "", text)
+        text = _strip_meta_text(text)
         lines = text.split("\n")
         i = 0
         while i < len(lines):
@@ -102,8 +140,8 @@ def extract_srt_entries_deduped(texts: list[str]) -> dict[int, tuple[str, str]]:
                 ):
                     text_lines.append(lines[k])
                     k += 1
-                if num not in entries:
-                    entries[num] = (ts, "\n".join(text_lines))
+                # last-wins: later occurrence overrides earlier draft
+                entries[num] = (ts, "\n".join(text_lines))
                 i = k
             else:
                 i += 1

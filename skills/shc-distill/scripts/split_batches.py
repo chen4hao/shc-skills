@@ -15,6 +15,14 @@
                            time:  按總時長均分（每批 ~total_dur/N 秒，時段一致、條目不均）
   --split-only             只產 batch SRT 檔，不產翻譯 prompt 和 agent_config.json
                            用於純分段萃取流程（如影片 distill 分段）
+  --auto-batches           依條目數自動選擇批次數（覆蓋 NUM_BATCHES 位置參數）
+                           ≤450 條 → 2-3 批（跳過 sample-first 門檻，可一次性同訊息啟動）
+                           450-1200 條 → 每批 ~200 條
+                           >1200 條 → 每批 ~250 條
+  --glossary PATH          指向主代理寫好的詞彙表 .md 檔（產品名保留清單、統一中譯表、
+                           常見字幕誤聽變體還原表）。腳本讀取後附加到每個
+                           prompt_batch_N.txt 的末尾，取代「主代理在每個 Agent call
+                           手工貼同一份還原表」的 DRY 反模式。
 
 產出：
   {VIDEO_ID}_{LANG}_batch_{N}.srt   — 各批次 SRT 檔（一律產出）
@@ -33,10 +41,13 @@ PROMPT_EN_TO_ZH = """\
 1. **條目數量必須完全相同** — 輸入 {entry_count} 條，輸出必須恰好 {entry_count} 條。禁止拆分或合併條目。
 2. **保留完全相同的條目編號和時間戳** — 僅替換文字行
 3. **每條字幕的中文必須對應同一條英文的語意** — 這是雙語同步的關鍵
+4. **人名一律保留原文拼字** — 不論出現在 speaker label（方括號內）或正文中，所有人名（first name、last name、honorifics）保留原文不音譯。範例：`Ro Khanna` 保留 `Ro Khanna`，**禁止**譯為「甘納」「坎納」等音譯；`H.R. McMaster` 保留 `H.R. McMaster`，**禁止**譯為「麥馬斯特」。**唯一例外**是擁有通用正式中譯的名字（例：`Jensen Huang → 黃仁勳` 可接受）。跨 batch 翻譯一致性的關鍵就在這條——子代理間對「什麼算通用中譯」的判斷分歧會產生混用譯名
+5. **Speaker label 格式統一用全形【】** — 所有 speaker 標記一律用全形 `【】`，**禁止**用半形 `[]`。即使原 SRT 使用半形 `[`/`]`，翻譯時也統一改為全形。範例：輸入 `[JENSEN HUANG]` → 輸出 `【JENSEN HUANG】` ✓、保留 `[JENSEN HUANG]` ✗。跨 batch 格式一致的關鍵
+6. **Speaker label 內的人名即使看起來錯誤也不自行糾正** — 若原 SRT speaker label 的人名與 description/title 提到的講者不匹配（可能是 YouTube auto-caption 的 speaker diarization 誤識別），**保留原字不替換**——修正由主代理在 finalize 後統一處理。範例：若原 SRT 出現 `[GERALD CONNOLLY]` 但 description 只列 Ro Khanna，子代理**保留** `【GERALD CONNOLLY】`（僅做格式統一），不自行改為 `【RO KHANNA】`
 
 ## 翻譯品質要求：
 - 翻譯自然流暢，符合中文口語習慣，非逐字翻譯
-- 專有名詞（人名、公司名、技術名詞）保留原文
+- 公司名、技術名詞保留原文（人名規則見嚴格規則第 4 條）
 - 中文每行控制在 25 字以內，超過可適當精簡
 - 參考前後 2-3 條字幕的語境來翻譯，確保上下文連貫
 
@@ -56,6 +67,12 @@ PROMPT_EN_TO_ZH = """\
 **重要：不要嘗試用 Write 工具或 Bash 寫入檔案（會被 sandbox 拒絕）。請將完整翻譯後的 SRT 內容直接作為你的回覆輸出，由主代理負責寫入。**
 
 **格式要求：直接輸出純 SRT 文字，禁止用 ``` code block 包裝（code fence 標記會污染最終字幕檔）。**
+
+## 自我修正上限（強制規則）：
+- 完成第一輪完整翻譯後，若發現錯誤，**最多**做一次整體修正並重新輸出完整版
+- **嚴禁**反覆自我懷疑、重讀原檔、重譯部分條目、累計超過 2 輪自我修正——這會導致子代理耗時暴增（實測曾達正常批次的 8-20 倍）
+- 若第一輪翻譯自覺不準，用「修正版」取代「原版」作為最終輸出，不要兩版都保留
+- 主代理 extract 腳本會用**最後一個** assistant message 作為權威版本，所以只要確保最後輸出是完整正確的就好
 
 翻譯完成後回報：輸入條目數={entry_count}，輸出條目數=?，確認一致。"""
 
@@ -90,6 +107,12 @@ Use the Read tool to read {srt_path} **entire file**, translate all {entry_count
 **IMPORTANT: Do NOT use Write tool or Bash to write files (will be rejected by sandbox). Output the complete translated SRT content directly as your reply. The main agent will handle writing.**
 
 **Format: Output plain SRT text only. Do NOT wrap in ``` code blocks (code fence markers will pollute the final subtitle file).**
+
+## Self-correction cap (mandatory):
+- After your first complete translation, if you find errors, do **at most one** holistic correction and re-output the complete version
+- **Forbidden**: repeated self-doubt, re-reading the source, re-translating partial entries, or accumulating >2 rounds of self-correction. This causes subagent runtime to explode (observed cases: 8-20× normal batch time)
+- If your first pass feels inaccurate, replace it with a corrected version as the final output. Do not keep both versions
+- The main-agent extractor treats the **last** assistant message as authoritative, so just make sure the last output is complete and correct
 
 After translation, report: input entries={entry_count}, output entries=?, confirm they match."""
 
@@ -144,14 +167,68 @@ def split_by_time(blocks, num_batches):
     return batches
 
 
+# ── 自動批次數選擇 ────────────────────────────────────────
+
+def auto_num_batches(total_entries: int) -> int:
+    """依條目數自動選擇批次數。
+
+    目標優先順序：
+    1. 能用 ≤3 批就用 ≤3 批（跳過 sample-first 規則，可同訊息一次性啟動）
+    2. 每批 ≤ ~200 條（避免 sonnet 輸出截斷）
+    3. 總批次控制在合理範圍（避免主代理認知負擔）
+
+    決策表：
+    - ≤450 條 → 2-3 批（每批 ~150 條）：跳過 sample-first
+    - 450-1200 條 → 3-6 批（每批 ~200 條）
+    - >1200 條 → 5+ 批（每批 ~250 條）
+    """
+    if total_entries <= 450:
+        return max(2, math.ceil(total_entries / 150))
+    if total_entries <= 1200:
+        return math.ceil(total_entries / 200)
+    return math.ceil(total_entries / 250)
+
+
 # ── 主邏輯 ───────────────────────────────────────────────────
 
 def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en",
-              split_by="entry", split_only=False):
+              split_by="entry", split_only=False, auto_batches=False,
+              glossary_text=""):
+    # 自動偵測 .clean.srt 變體：若傳入未清理的 .srt 且同目錄存在 .clean.srt，自動切換
+    # 避免錯用未清理的 YouTube 自動字幕（2370 raw vs 513 final 條目數差異巨大）
+    if not input_path.endswith('.clean.srt') and input_path.endswith('.srt'):
+        clean_candidate = input_path[:-4] + '.clean.srt'
+        if os.path.exists(clean_candidate):
+            print(
+                f"  [auto] {os.path.basename(input_path)} 同目錄存在 .clean.srt 變體，"
+                f"改用 {os.path.basename(clean_candidate)}（dedup 後的乾淨版）",
+                file=sys.stderr,
+            )
+            input_path = clean_candidate
+
     with open(input_path) as f:
         content = f.read()
     blocks = [b.strip() for b in re.split(r'\n\n+', content.strip()) if '-->' in b]
     total = len(blocks)
+
+    if auto_batches:
+        auto_n = auto_num_batches(total)
+        print(f"  [auto] {total} entries → {auto_n} batches (overriding default {num_batches})")
+        num_batches = auto_n
+
+    # 標記翻譯主軌：在 INPUT_SRT 同目錄建 master_{lang}.srt symlink，
+    # 讓下游 merge.py 能精確抓到「翻譯所根據的那一份英文」，而非誤用
+    # 同目錄的 .en-orig.clean.srt 等候選。
+    try:
+        input_abs = os.path.abspath(input_path)
+        master_link = os.path.join(os.path.dirname(input_abs), f"master_{lang}.srt")
+        if os.path.islink(master_link) or os.path.exists(master_link):
+            os.remove(master_link)
+        os.symlink(input_abs, master_link)
+    except OSError:
+        # symlink 失敗（例如 Windows / 某些 fs）就靜默跳過——
+        # merge.py 有精確 glob fallback，不會選錯
+        pass
 
     # 依 split_by 選擇拆分方式
     if split_by == "time":
@@ -202,6 +279,15 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en",
             entry_count=len(batch),
             srt_path=srt_path,
         )
+        # 附加主代理提供的 glossary（產品名保留 / 統一中譯 / 誤聽還原表）
+        # 取代「主代理在每個 Agent call 手工貼同一份還原表」的反模式
+        if glossary_text:
+            prompt_text += (
+                "\n\n---\n\n"
+                "## 主代理注入的詞彙表（絕對強制，禁止質疑）\n\n"
+                + glossary_text.strip()
+                + "\n"
+            )
         prompt_path = os.path.join(output_dir, f"{video_id}_prompt_batch_{batch_num}.txt")
         with open(prompt_path, 'w') as f:
             f.write(prompt_text)
@@ -247,15 +333,32 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en",
         json.dump(config, f, ensure_ascii=False, indent=2)
 
     # phase-specific 提醒
-    print(f"\n拆分完成：{total} 條字幕 → {len(batches_info)} 個批次（{direction_desc}，{split_by}-based）")
+    n = len(batches_info)
+    print(f"\n拆分完成：{total} 條字幕 → {n} 個批次（{direction_desc}，{split_by}-based）")
     print("════════════════════════════════════════════════════════")
-    print(f"⚠️  下一步：在【同一個訊息】中啟動全部 {len(batches_info)} 個 Agent")
-    print(f"   設定檔（含各批次 prompt 路徑）：{config_path}")
-    print(f"   Agent 設定：model=\"sonnet\", mode=\"dontAsk\", run_in_background=true")
+    if n <= 3:
+        print(f"⚠️  ≤3 批 → 跳過 sample-first，一次性同訊息啟動")
+        print(f"")
+        print(f"   下一訊息【同一個回覆內】併發：")
+        print(f"     - {n} 個 Agent call（batch 1..{n}，每個 run_in_background=true）")
+        print(f"     - Read head 500 + Read tail 200（SRT 主代理筆記素材）")
+        print(f"     - advisor()  ← 與 agents 零資料依賴，必須同訊息並行")
+        print(f"   總計 {n + 3} 個工具同訊息並行")
+    else:
+        print(f"⚠️  ≥4 批 → 觸發 sample-first 流程（分 2 個訊息）")
+        print(f"")
+        print(f"   訊息 2：batch 1 Agent + Read head 500 + Read tail 200（同訊息並行）")
+        print(f"")
+        print(f"   訊息 3（batch 1 驗證通過後）：【同一個回覆內】併發")
+        print(f"     - {n - 1} 個 Agent call（batch 2..{n}，每個 run_in_background=true）")
+        print(f"     - advisor()  ← 禁止拖到 batch 全回傳後單獨 call")
+        print(f"   總計 {n} 個工具同訊息並行")
+        print(f"")
+        print(f"   違規高危：只發 {n - 1} 個 Agent 漏掉 advisor → 損失 ~60s 並行窗口")
     print(f"")
-    print(f"   做法：Read agent_config.json → 對每個 batch 發一個 Agent call")
-    print(f"         每個 Agent 的 prompt = batch.agent_prompt（已預產出）")
-    print(f"         所有 {len(batches_info)} 個 Agent call 必須在同一個回覆中發出")
+    print(f"   Agent 設定：model=\"sonnet\", mode=\"dontAsk\", run_in_background=true")
+    print(f"   Agent prompt：讀 {video_id}_prompt_batch_N.txt 中的翻譯指示")
+    print(f"   （不需要 Read {video_id}_agent_config.json，meta-prompt 格式可推得）")
     print("════════════════════════════════════════════════════════")
 
 
@@ -276,7 +379,22 @@ def main():
                     help="Split method (default: entry)")
     ap.add_argument("--split-only", action="store_true",
                     help="Only produce batch SRT files, skip translation prompt generation")
+    ap.add_argument("--auto-batches", action="store_true",
+                    help="Auto-select NUM_BATCHES by entry count (≤450→2-3 batches, ≤1200→~200/batch, else ~250/batch). Overrides NUM_BATCHES positional.")
+    ap.add_argument("--glossary", default=None,
+                    help="Path to a .md file containing the main agent's glossary (product-name preservation list, unified translations, mishearing restoration table). Content is appended to every prompt_batch_N.txt, replacing the DRY-violating pattern of hand-pasting the same glossary into each Agent call.")
     args = ap.parse_args()
+
+    glossary_text = ""
+    if args.glossary:
+        try:
+            with open(args.glossary, encoding="utf-8") as f:
+                glossary_text = f.read()
+            print(f"  [glossary] loaded {len(glossary_text)} chars from {args.glossary}",
+                  file=sys.stderr)
+        except OSError as e:
+            print(f"  WARN: could not read glossary {args.glossary}: {e}",
+                  file=sys.stderr)
 
     split_srt(
         args.input_srt,
@@ -286,6 +404,8 @@ def main():
         lang=args.lang,
         split_by=args.split_by,
         split_only=args.split_only,
+        auto_batches=args.auto_batches,
+        glossary_text=glossary_text,
     )
 
 

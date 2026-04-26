@@ -1,7 +1,18 @@
 """長音訊 Whisper STT：自動分段處理，避免幻覺傳遞並支援平行執行。
 
 用法:
+  # 一次性完整流程（適合前台短音訊或不受背景限制的環境）
   uv run python3 whisper_stt_long.py <AUDIO_PATH> <OUTPUT_DIR> [options]
+
+  # 三步驟前台工作流（適合 Claude Code 等背景任務無法持久化 /tmp 的環境）
+  # Step 1: 只做 ffmpeg 分段（<5 秒）
+  uv run python3 whisper_stt_long.py <AUDIO_PATH> <OUTPUT_DIR> --split-only [options]
+  # Step 2: 逐段前台執行 whisper_stt.py（每段獨立呼叫，各 1-3 分鐘）
+  uv run python3 whisper_stt.py <SEGMENTS_DIR>/seg_000.mp4 <SEGMENTS_DIR> --language zh
+  uv run python3 whisper_stt.py <SEGMENTS_DIR>/seg_001.mp4 <SEGMENTS_DIR> --language zh
+  ...
+  # Step 3: 合併所有段 SRT（<5 秒）
+  uv run python3 whisper_stt_long.py <AUDIO_PATH> <OUTPUT_DIR> --merge-only [options]
 
 位置參數:
   AUDIO_PATH: 音訊或影片檔案路徑
@@ -15,13 +26,8 @@
   --parallel N                       同時執行的 mlx_whisper 進程數（預設 1；M 系列建議 1-2）
   --force-segment                    即使音訊 <30 分鐘也強制分段
   --keep-segments                    保留 tmp_segments/ 暫存目錄（預設刪除）
-
-流程：
-  1. ffprobe 取得音訊總時長
-  2. 若 >30 分鐘（或 --force-segment），用 ffmpeg 切段（-c copy 零重編碼）
-  3. 對每段執行 mlx_whisper（可平行）
-  4. 以「各段實際時長」計算累積 offset，合併所有段 SRT
-  5. 若語言為中文（zh），自動用 OpenCC s2twp 繁體轉換產出 .zh-tw.clean.srt
+  --split-only                       只做 ffmpeg 分段，輸出段清單後結束（隱含 --keep-segments）
+  --merge-only                       只做合併（假設各段 SRT 已由 whisper_stt.py 產生）
 
 產出：
   {basename}.srt              — 合併後的 SRT（原語言）
@@ -33,6 +39,11 @@
      拉到後段繼續生成；分段後每段獨立 conditioning，單點幻覺不會擴散
   2. **可平行**：多段可同時跑（M 系列 ANE 允許有限度的並行）
   3. **timeout 控制**：每段獨立 subprocess call，單段失敗不拖整個流程
+
+三步驟工作流的動機：
+  Claude Code 的背景 Bash 任務（run_in_background=true 或被系統自動推到背景的長指令）
+  寫入 /tmp/ 的檔案不會持久化。完整流程（分段+STT+合併）耗時 >5 分鐘，必定被推到背景。
+  拆成三步後每步 <3 分鐘，可在前台完成，檔案正常持久化。
 """
 import argparse
 import os
@@ -208,10 +219,17 @@ def main():
     ap.add_argument('--parallel', type=int, default=1,
                     help='Parallel mlx_whisper processes (default 1; M 系列建議 1-2)')
     ap.add_argument('--force-segment', action='store_true',
-                    help='Force segmentation even if audio <30 minutes')
+                    help='Force segmentation even if audio is shorter than --segment-minutes')
     ap.add_argument('--keep-segments', action='store_true',
                     help='Keep tmp_segments/ directory after completion')
+    ap.add_argument('--split-only', action='store_true',
+                    help='Only split audio into segments, print segment list, then exit')
+    ap.add_argument('--merge-only', action='store_true',
+                    help='Only merge existing segment SRTs (assumes whisper_stt.py already ran on each)')
     args = ap.parse_args()
+
+    if args.split_only:
+        args.keep_segments = True  # split-only implies keep-segments
 
     if not os.path.exists(args.audio_path):
         print(f"error: audio not found: {args.audio_path}", file=sys.stderr)
@@ -219,6 +237,11 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     basename = os.path.splitext(os.path.basename(args.audio_path))[0]
+    segments_dir = os.path.join(args.output_dir, 'tmp_segments')
+
+    # ── --merge-only 模式 ──────────────────────────────────
+    if args.merge_only:
+        return _merge_only(args, basename, segments_dir)
 
     # --- Step 1: probe duration ---
     print("=== Step 1: 偵測音訊時長 ===")
@@ -229,10 +252,11 @@ def main():
     else:
         print(f"  音訊時長: {duration:.0f}s ({duration / 60:.1f} 分鐘)")
 
-    threshold_sec = 30 * 60
+    # Threshold = segment_minutes so audio shorter than one segment stays single-shot.
+    # Previously hard-coded 30 min, which caused 30-45 min audio to run the full
+    # split/whisper/merge pipeline and produce only 1 segment — pure overhead.
+    threshold_sec = args.segment_minutes * 60
     use_segmentation = args.force_segment or (duration > threshold_sec)
-
-    segments_dir = os.path.join(args.output_dir, 'tmp_segments')
 
     if not use_segmentation:
         # --- Single-shot mode ---
@@ -258,6 +282,17 @@ def main():
             dur = probe_duration(s)
             dur_str = f"{dur:.0f}s" if dur is not None else "?"
             print(f"    seg_{i:03d}: {size_mb:.1f} MB, {dur_str}")
+
+        # ── --split-only 模式：輸出段清單後結束 ──
+        if args.split_only:
+            print(f"\nSEGMENTS_DIR={segments_dir}")
+            print(f"SEGMENT_COUNT={len(seg_files)}")
+            for i, s in enumerate(seg_files):
+                dur = probe_duration(s) or 0.0
+                print(f"SEG|{i:03d}|{s}|{dur:.3f}")
+            print("\n=== split-only 完成 ===")
+            print("接下來請逐段前台執行 whisper_stt.py，然後用 --merge-only 合併。")
+            return 0
 
         # --- Step 3: run mlx_whisper on each segment ---
         print(f"\n=== Step 3: mlx_whisper STT（平行度 {args.parallel}） ===")
@@ -321,6 +356,88 @@ def main():
 
     print("\n=== 完成 ===")
     print(f"SRT: {final_srt}")
+    print("SUBS_AVAILABLE=YES")
+    return 0
+
+
+def _merge_only(args, basename, segments_dir):
+    """--merge-only 模式：合併由 whisper_stt.py 產生的各段 SRT。
+
+    whisper_stt.py 已對每段做了幻覺清理和 OpenCC 繁轉（中文時），
+    因此本函式只需合併 .zh-tw.clean.srt（zh）或 .clean.srt（其他語言），
+    不再重複做 OpenCC。
+    """
+    if not os.path.isdir(segments_dir):
+        print(f"error: segments directory not found: {segments_dir}", file=sys.stderr)
+        return 1
+
+    # 找出所有段的音訊檔，用於計算時間偏移
+    # 嚴格匹配 `seg_NNN.{ext}` 格式：排除 `seg_NNN_patch.mp4`、`seg_NNN_fix.mp4`
+    # 等臨時補丁切片檔（這些若混進 merge 會被當第 N+1 段加錯 offset，導致時間軸偏移）
+    _SEG_AUDIO_RE = re.compile(r'^seg_\d{3}\.(mp3|mp4|m4a|webm|wav)$')
+    seg_audio_files = sorted([
+        os.path.join(segments_dir, f) for f in os.listdir(segments_dir)
+        if _SEG_AUDIO_RE.match(f)
+    ])
+    if not seg_audio_files:
+        print(f"error: no segment audio files found in {segments_dir}", file=sys.stderr)
+        return 1
+
+    # 根據語言決定要合併哪種 SRT
+    if args.language == 'zh':
+        srt_suffix = '.zh-tw.clean.srt'
+        output_name = f"{basename}.zh-tw.clean.srt"
+    else:
+        srt_suffix = '.en.clean.srt'
+        output_name = f"{basename}.en.clean.srt"
+
+    # 嘗試找到對應的 SRT 檔案
+    srt_paths = []
+    for seg_audio in seg_audio_files:
+        seg_base = os.path.splitext(os.path.basename(seg_audio))[0]
+        srt_candidate = os.path.join(segments_dir, seg_base + srt_suffix)
+        # fallback: try plain .srt
+        if not os.path.exists(srt_candidate):
+            srt_candidate_plain = os.path.join(segments_dir, seg_base + '.srt')
+            if os.path.exists(srt_candidate_plain):
+                srt_candidate = srt_candidate_plain
+            else:
+                print(f"  ⚠️ 找不到 {seg_base} 的 SRT 檔案，跳過")
+                srt_paths.append(None)
+                continue
+        srt_paths.append(srt_candidate)
+
+    found = sum(1 for p in srt_paths if p is not None)
+    if found == 0:
+        print("error: 找不到任何段 SRT 檔案", file=sys.stderr)
+        return 1
+
+    print(f"=== merge-only：合併 {found}/{len(seg_audio_files)} 段 SRT ===")
+
+    # 合併
+    output_path = os.path.join(args.output_dir, output_name)
+    total_entries, offsets = merge_srts_with_precise_offsets(
+        srt_paths, seg_audio_files, output_path
+    )
+
+    total_duration = offsets[-1] if offsets else 0
+    h = int(total_duration // 3600)
+    m = int((total_duration % 3600) // 60)
+    s = int(total_duration % 60)
+
+    print(f"  ✅ 合併完成: {total_entries} 條字幕")
+    print(f"  總時長: {h}:{m:02d}:{s:02d}")
+    print(f"  輸出: {output_path}")
+
+    # 清理 tmp_segments（除非 --keep-segments）
+    if not args.keep_segments:
+        shutil.rmtree(segments_dir, ignore_errors=True)
+        print(f"  已清理 {segments_dir}")
+
+    print("\n=== 完成 ===")
+    print(f"SRT: {output_path}")
+    print(f"Total entries: {total_entries}")
+    print(f"Total duration: {h}:{m:02d}:{s:02d}")
     print("SUBS_AVAILABLE=YES")
     return 0
 

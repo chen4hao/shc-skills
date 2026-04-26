@@ -186,8 +186,11 @@ if removed_count > 0:
     with open(srt_path, 'w', encoding='utf-8') as f:
         f.write(content)
     new_count = content.count('-->')
-    print(f"  🧹 移除 {removed_count} 條幻覺條目（連續重複文字）")
+    removed_pct = (removed_count / entry_count * 100) if entry_count else 0
+    print(f"  🧹 移除 {removed_count} 條幻覺條目（連續重複文字，佔原 {removed_pct:.1f}%）")
     print(f"  ✅ 清理後: {new_count} 條字幕（原 {entry_count} 條）")
+    if removed_pct >= 30:
+        print(f"  ⚠️ HIGH_HALLUCINATION_RATE={removed_pct:.1f}% — 主代理應在通報時向使用者標示，並抽查清理後 SRT 是否有缺口")
     entry_count = new_count
 else:
     print(f"  ✅ 無幻覺條目，維持 {entry_count} 條字幕")

@@ -54,17 +54,35 @@ print(f"  可用字幕: {has_native_subs}")
 # === 階段 1：只下載字幕 + metadata（不下載影音） ===
 if has_native_subs:
     print("=== 階段 1：嘗試下載字幕 ===")
-    subprocess.run([
+    # 只下 en 單一語言；en-orig 與 en 內容經實測完全一致（dedup 後條目數相同），
+    # 下載兩份是網路與磁碟浪費。若 en 不存在才在 fallback 區塊中嘗試 en-orig。
+    _sub_result = subprocess.run([
         "yt-dlp",
         "--cookies-from-browser", "chrome",
         "--write-subs", "--write-auto-subs",
-        "--sub-langs", "en-orig,en",
+        "--sub-langs", "en",
         "--convert-subs", "srt",
         "--write-info-json",
         "--skip-download",
         "-o", os.path.join(temp_dir, "%(id)s.%(ext)s"),
         url
-    ], check=True)
+    ], check=False)
+    # Fallback：若只下 en 沒拿到任何字幕檔，退回試 en-orig
+    _got_subs = bool(glob.glob(os.path.join(temp_dir, "*.en.srt")) or
+                     glob.glob(os.path.join(temp_dir, "*.en.vtt")))
+    if not _got_subs:
+        print("  ⚠️ en 字幕未取得，fallback 嘗試 en-orig ===")
+        subprocess.run([
+            "yt-dlp",
+            "--cookies-from-browser", "chrome",
+            "--write-subs", "--write-auto-subs",
+            "--sub-langs", "en-orig",
+            "--convert-subs", "srt",
+            "--write-info-json",
+            "--skip-download",
+            "-o", os.path.join(temp_dir, "%(id)s.%(ext)s"),
+            url
+        ], check=False)
 elif _preflight_info is not None:
     # Preflight 成功但無字幕：直接從 preflight JSON 落地 info.json，跳過有問題的 Stage 1
     print("=== 階段 1：跳過（preflight 無可用字幕） ===")
@@ -80,7 +98,7 @@ else:
         "yt-dlp",
         "--cookies-from-browser", "chrome",
         "--write-subs", "--write-auto-subs",
-        "--sub-langs", "en-orig,en",
+        "--sub-langs", "en",
         "--convert-subs", "srt",
         "--write-info-json",
         "--skip-download",
@@ -134,5 +152,36 @@ if info_files:
     desc = info.get('description', 'N/A')
     print(f"Description: {desc[:2000]}")
 
+# === 偵測語言提示（協助主代理切純中文 vs 英文翻譯流程） ===
+def _detect_language_hint():
+    # 1. URL 平台層：純中文/中國平台直接回 zh
+    zh_platforms = ('bilibili.com', 'b23.tv', 'ximalaya.com', 'lizhi.fm',
+                    'qingting.fm', 'xiaoyuzhoufm.com')
+    if any(d in url for d in zh_platforms):
+        return 'zh'
+    # 2. yt-dlp metadata 的 language 欄位（YouTube 提供）
+    if info_files:
+        try:
+            with open(info_files[0]) as _f:
+                _info = json.load(_f)
+        except Exception:
+            _info = {}
+        lang = (_info.get('language') or '').lower()
+        if lang.startswith('zh') or lang in ('cmn', 'yue'):
+            return 'zh'
+        if lang.startswith('en'):
+            return 'en'
+        # 3. fallback：channel + title 中文字元比例（CJK 統一漢字 + 注音）
+        sample = (_info.get('channel') or '') + (_info.get('uploader') or '') + (_info.get('title') or '')
+        if sample:
+            cjk = sum(1 for c in sample if '一' <= c <= '鿿' or '㄀' <= c <= 'ㄯ')
+            if cjk / len(sample) > 0.3:
+                return 'zh'
+            if any('a' <= c.lower() <= 'z' for c in sample) and cjk == 0:
+                return 'en'
+    return 'unknown'
+
+print(f"LANGUAGE_HINT={_detect_language_hint()}")
+
 # === 輸出狀態供後續步驟判斷 ===
-print(f"\nSUBS_AVAILABLE={'YES' if has_subs else 'NO'}")
+print(f"SUBS_AVAILABLE={'YES' if has_subs else 'NO'}")

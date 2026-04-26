@@ -157,7 +157,10 @@ def clean_srt(input_path, output_path):
         for idx, e in enumerate(final, 1):
             f.write(f"{idx}\n{e['start']} --> {e['end']}\n{e['text']}\n\n")
 
+    # 印出 tail 200 的 Read offset，避免主代理心算 entries*4-200 時出錯
+    tail_offset_200 = max(0, len(final) * 4 - 200)
     print(f"  {input_path}: {len(entries)} raw → {len(deduped)} deduped → {len(final)} final")
+    print(f"  TAIL_OFFSET_200={tail_offset_200}  (Read offset={tail_offset_200} limit=200)")
 
 for f in sorted(glob.glob(os.path.join(temp_dir, '*.*'))):
     if f.endswith(('.srt', '.vtt')):
