@@ -144,6 +144,10 @@ argument-hint: "[URL, local file path, or content source]"
 2. 用 `$SCRIPTS/epub_extract.py ... --all --isolate` 提取所有章節為獨立 .txt 檔（存到 `{專案輸出目錄}/_tmp_extract_<hash>/`，因為子代理無法存取 `/tmp/`；`--isolate` 強制加 epub hash 後綴防 session 衝突，stdout 印 `EXTRACT_DIR=<實際路徑>`，後續統一用此路徑）
 3. **Content-verify**：用 Bash `sed -n '3p' {EXTRACT_DIR}/ch003*.txt` 取第 3 行書名（**不用 Read 工具**），對照步驟 0 的 OPF `TITLE`——不符即停（見 `feedback_epub_session_conflict.md` 與 `feedback_content_verify_scope_strict.md`）
 4. 按章節自然邊界規劃分段（每段可包含 1-3 章，視大小而定）
+5. **章節結構掃描禁忌**（2026-04-26 Kettlebell S&S 教訓）：
+   - **章名抓取一輪 awk**：`awk 'FNR==1{f=FILENAME; sub(".*/","",f); print "=="f"=="} FNR==4{print substr($0,1,130); nextfile}' {EXTRACT_DIR}/ch*.txt`——一次取所有章名（章名通常在第 4 行）。**禁先用 head 看前 3 行**——多為重複的書名 header，零章名資訊（見 `feedback_epub_chapter_title_oneshot_awk.md`）
+   - **<100B 章節零 Read**：從 `--list` 的 size 直接判斷為 PART 分隔頁 / cover / dedication，不需 Read 確認（見 `feedback_epub_distill_efficiency.md` 規則 1）
+   - **禁主代理 Read intro / 前言章節**（如 "Introduction"、"Preface"、各書的「導論」性質開場章，包括書中第一個概論性章節如 Pavel 的 "SIMPLE & SINISTER"、"THE RUSSIAN KETTLEBELL" 等）——子代理會獨立讀，主代理 Read 是純冗餘且內容多重複出現在大章子代理的產出中（見 `feedback_epub_distill_efficiency.md` 規則 9）
 
 #### 步驟 2：並行讀取所有頁面
 
