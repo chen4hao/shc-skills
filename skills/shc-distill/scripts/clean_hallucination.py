@@ -1,19 +1,30 @@
-"""清理 SRT 字幕檔中的 Whisper 幻覺（連續重複條目）。
+"""清理 SRT 字幕檔中的 Whisper 幻覺（三種偵測模式）。
 
-Whisper 在靜音、掌聲、背景音樂等段落常產生大量重複文字條目（hallucination）。
-本腳本偵測並移除這類連續重複條目，只保留每段重複的第一條，並重新編號。
+Whisper 在靜音、掌聲、背景音樂、或中段 decoder 卡住時會產生幻覺。依模式偵測並移除：
+
+  1. 預設（連續重複）    — 同文字條目連續出現 ≥min-repeat 次（掌聲/靜音段最常見）
+  2. --strict            — 連續 ≥min-streak 個短字元（≤short-char）條目區，即使非完全相同
+  3. --long-line-mode    — 單一條目內「同字元佔比 >dominance」的長行（中段卡住產生 30
+                            秒固定區間的「對對對…」「嗯嗯嗯…」重複）
 
 用法:
-    uv run python3 clean_hallucination.py <SRT_PATH> [--min-repeat N] [--dry-run]
+    uv run python3 clean_hallucination.py <SRT_PATH> [options]
 
 參數:
-    SRT_PATH:     要清理的 SRT 檔案路徑
-    --min-repeat: 連續重複幾條以上才視為幻覺（預設 3）
-    --dry-run:    只報告不修改檔案
+    SRT_PATH:              要清理的 SRT 檔案路徑
+    --min-repeat N         預設模式：連續重複幾條以上才視為幻覺（預設 3）
+    --strict               啟用短字元密度模式（補強預設模式）
+    --strict-min-streak    --strict 的最小 streak 長度（預設 20）
+    --strict-char-threshold --strict 的短字元上限（預設 3）
+    --long-line-mode       啟用長行單字元重複模式
+    --long-line-min-chars  --long-line-mode 的最小行字元數（預設 20）
+    --long-line-dominance  --long-line-mode 的最頻字元佔比閾值（預設 0.8）
+    --dry-run              只報告不修改檔案
 
 範例:
     uv run python3 clean_hallucination.py /tmp/distill-xxx/xxx.en.clean.srt
-    uv run python3 clean_hallucination.py /tmp/distill-xxx/xxx.srt --min-repeat 5 --dry-run
+    uv run python3 clean_hallucination.py xxx.srt --strict --long-line-mode
+    uv run python3 clean_hallucination.py xxx.srt --long-line-mode --dry-run
 """
 import argparse
 import os
@@ -108,6 +119,35 @@ def strict_cleanup(entries, min_streak=20, short_char_threshold=3):
     return cleaned, len(to_remove), detected
 
 
+def long_line_cleanup(entries, min_chars=20, dominance=0.8):
+    """偵測「單條目內同字元佔比高」的長行幻覺（Whisper decoder 中段卡住產物）。
+
+    典型症狀：連續多條字幕都是固定 30 秒時間戳（如 `00:17:17,340 --> 00:17:47,340`），
+    文字是同一字元重複數百次（「對對對…」「嗯嗯嗯…」）。`clean_hallucinations()` 抓不到
+    （條目間偶爾夾真實內容打斷連續性），`strict_cleanup()` 也抓不到（這些是「長行」而非
+    「短字元 streak」）。本函數以「單條目內最頻字元佔比 >dominance」為判準。
+
+    回傳 (cleaned_entries, removed_count, details)，其中
+    details = [(orig_idx_1based, ts, text_preview), ...]
+    """
+    from collections import Counter
+
+    cleaned = []
+    details = []
+    for idx, (ts, text) in enumerate(entries, start=1):
+        # 去除所有空白字元，只看實際內容
+        plain = ''.join(text.split())
+        if len(plain) >= min_chars:
+            counter = Counter(plain)
+            _, top_count = counter.most_common(1)[0]
+            if top_count / len(plain) >= dominance:
+                preview = plain[:30] + ('…' if len(plain) > 30 else '')
+                details.append((idx, ts, preview))
+                continue
+        cleaned.append((ts, text))
+    return cleaned, len(details), details
+
+
 def entries_to_srt(entries):
     """Convert entries list to SRT text with sequential numbering."""
     parts = []
@@ -127,6 +167,12 @@ def main():
                     help='--strict 模式的最小 streak 長度（預設 20）')
     ap.add_argument('--strict-char-threshold', type=int, default=3,
                     help='--strict 模式的「短字元」上限（預設 3，即 ≤3 字元的條目被視為短條目）')
+    ap.add_argument('--long-line-mode', action='store_true',
+                    help='偵測單一條目內「同字元重複佔比 >dominance」的長行幻覺（中段卡住產物，如「對對對...」）')
+    ap.add_argument('--long-line-min-chars', type=int, default=20,
+                    help='--long-line-mode 的最小行字元數（預設 20；少於此數的短行不判定）')
+    ap.add_argument('--long-line-dominance', type=float, default=0.8,
+                    help='--long-line-mode 的最頻字元佔比閾值（預設 0.8）')
     args = ap.parse_args()
 
     if not os.path.exists(args.srt_path):
@@ -146,15 +192,32 @@ def main():
     print(f"原始條目數: {len(entries)}")
 
     if removed == 0:
-        print(f"未偵測到幻覺（連續重複 >= {args.min_repeat} 條）")
-        return 0
-
-    print(f"偵測到 {len(details)} 段幻覺，共 {removed} 條將被移除：")
+        print(f"未偵測到連續重複幻覺（預設模式：連續重複 >= {args.min_repeat} 條）")
+        # 仍然繼續到 strict / long-line 階段（兩者可獨立觸發）
+    else:
+        print(f"偵測到 {len(details)} 段幻覺，共 {removed} 條將被移除：")
     for start, end, text, count in details:
         preview = text[:50].replace('\n', ' ')
         print(f"  條目 {start}-{end} ({count} 條): \"{preview}...\"" if len(text) > 50 else f"  條目 {start}-{end} ({count} 條): \"{preview}\"")
 
     print(f"清理後條目數: {len(cleaned)}")
+
+    # --- Long-line 模式：單條目內同字元重複佔比 ---
+    if args.long_line_mode:
+        cleaned, long_removed, long_details = long_line_cleanup(
+            cleaned,
+            min_chars=args.long_line_min_chars,
+            dominance=args.long_line_dominance,
+        )
+        if long_removed:
+            print(f"\n[--long-line-mode] 偵測到 {long_removed} 條長行幻覺（最頻字元佔比 ≥ {args.long_line_dominance:.0%}）：")
+            for orig_idx, ts, preview in long_details[:10]:
+                print(f"  #{orig_idx} [{ts}] {preview}")
+            if long_removed > 10:
+                print(f"  ... 共 {long_removed} 條")
+            print(f"[--long-line-mode] 清理後條目數: {len(cleaned)}")
+        else:
+            print(f"\n[--long-line-mode] 無長行幻覺（最小 {args.long_line_min_chars} 字元且最頻佔比 ≥ {args.long_line_dominance:.0%}）")
 
     # --- Strict 模式：滑動視窗短字元區清理 ---
     if args.strict:

@@ -3,8 +3,23 @@
 用法: uv run python3 merge.py <TEMP_DIR> [--master <en|zh>] [--en <PATH>] [--zh <PATH>]
   TEMP_DIR: 暫存目錄（產出 en.srt、zh-tw.srt、bilingual.srt）
   --master: 主軌語言（預設 "en"）。中文原文影片用 "zh"，以保留所有原文條目。
-  --en: 英文 SRT 檔案路徑（可選，預設自動搜尋 TEMP_DIR 中的 *.en*.clean.srt 或 en.combined.srt）
-  --zh: 中文 SRT 檔案路徑（可選，預設自動搜尋 TEMP_DIR 中的 zh.combined.srt 或 *.zh*.clean.srt）
+  --en: 英文 SRT 檔案路徑（可選，預設搜尋優先序見下）
+  --zh: 中文 SRT 檔案路徑（可選，預設搜尋優先序見下）
+
+英文預設搜尋順序（前者找到即用）:
+  1. {TEMP_DIR}/master_en.srt            — split_batches 明確標記的翻譯主軌
+  2. {TEMP_DIR}/en.combined.srt          — combine 步驟產出
+  3. {TEMP_DIR}/*.en.clean.srt           — 精確匹配 .en.clean.srt（不會誤中 .en-orig.clean.srt）
+  4. {TEMP_DIR}/*.en-orig.clean.srt      — 僅在只有 en-orig 版本時 fallback
+
+此順序確保：當 YouTube 同時提供 .en 和 .en-orig 兩種英文字幕時，
+merge 使用的 master 與 split_batches 翻譯來源一致（預設 .en.clean.srt），
+避免條目數不一致導致的時間戳對齊降級。
+
+中文預設搜尋順序:
+  1. {TEMP_DIR}/master_zh.srt
+  2. {TEMP_DIR}/zh.combined.srt
+  3. {TEMP_DIR}/*.zh*.clean.srt
 """
 import re, glob, sys, argparse
 
@@ -66,12 +81,16 @@ def find_file(explicit, globs):
     return None
 
 en_path = find_file(args.en_path, [
+    f'{temp_dir}/master_en.srt',
     f'{temp_dir}/en.combined.srt',
-    f'{temp_dir}/*.en*.clean.srt',
-    f'{temp_dir}/*.en-orig*.clean.srt',
+    f'{temp_dir}/*.en.clean.srt',
+    f'{temp_dir}/*.en-orig.clean.srt',
 ])
 zh_path = find_file(args.zh_path, [
+    f'{temp_dir}/master_zh.srt',
     f'{temp_dir}/zh.combined.srt',
+    f'{temp_dir}/*.zh.clean.srt',
+    f'{temp_dir}/*.zh-tw.clean.srt',
     f'{temp_dir}/*.zh*.clean.srt',
 ])
 
