@@ -122,6 +122,41 @@ META_PROMPT = """\
 
 Prompt 檔案路徑：{prompt_path}"""
 
+# 末段 batch 特別警告：附加在最後一個 non-empty batch 的 prompt 末尾。
+# 末段 SRT 含 outro/applause/感謝詞，子代理常見故障是把連續兩個 EN 條目合併
+# 翻譯到一個 ZH 條目（即使語意流暢也算違規），導致 ZH 比 EN 少 1 條，最終
+# cascade 偏移觸發 finalize 的 outro drift 偵測。
+# 來源：2026-04-30 Karpathy × Sequoia distill — batch 3 把 entry 349 (gain
+# insight) + 350 (synthetic data generation) 合併翻譯，導致 entry 349-359 共
+# 11 條 ZH 偏移 -1，需要手寫 patch_drift_349_359.py 修復。
+OUTRO_WARNING = """\
+
+---
+
+## ⚠️ 末段 batch 特別警告（最後一個 batch 專用）
+
+本批次為**最後一個 batch**，包含影片 outro / 感謝詞 / [applause] 等收尾條目。
+SRT 末段子代理常見故障：把連續兩個 EN 條目合併翻譯到一個 ZH 條目（即使語意
+流暢也算違規），導致下游 ZH 比 EN 少 1 條，cascade 偏移整段。
+
+### 強制 1:1 對齊規則（違反即為失敗）
+
+- **每個 EN 條目必須獨立翻譯為一個 ZH 條目**——禁止合併兩個 EN 條目到一個
+  ZH 條目，即使 EN 條目語意連續、跨句、跨段也禁止
+- 出現 `[applause]` / `[laughter]` / `[music]` 等註解條目，獨立保留為
+  `[掌聲]` / `[笑聲]` / `[音樂]`，不與相鄰條目合併
+- 末段最後 5-15 條尤其容易出錯——逐條對照原 EN 條目編號和時間戳，**不要憑
+  語感分段**
+- 範例違規（曾發生）：EN 條目 N = "I'm excited to be back here..."、EN 條目
+  N+1 = "actually take care of understanding... thank you so much for joining
+  us"。**禁止**把這兩條合併翻譯到 ZH 條目 N，即使「我期待幾年後回來看
+  agent 是否也接管了理解。非常感謝...」更通順——必須拆成 ZH 條目 N 和
+  N+1，分別對應原 EN 條目時間戳
+
+違反此規則會觸發 finalize 的 outro drift 偵測，需要手寫 patch script 修復
+末段 5-15 條，多 3-4 個訊息輪次的成本。
+"""
+
 
 # ── 拆分函式 ───────────────────────────────────────────────
 
@@ -250,6 +285,13 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en",
 
     batches_info = []
 
+    # 找最後一個 non-empty batch number — outro warning 只附加在末段 batch
+    # 防止子代理把連續 EN 條目合併到一個 ZH 條目（cascade 偏移觸發 outro drift）
+    last_non_empty_batch_num = max(
+        (i + 1 for i, b in enumerate(split_blocks) if b),
+        default=0
+    )
+
     for i, batch in enumerate(split_blocks):
         if not batch:
             continue
@@ -268,7 +310,9 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en",
             time_info = f"[{int(ts_start // 60):02d}:{int(ts_start % 60):02d}–{int(ts_end // 60):02d}:{int(ts_end % 60):02d}]"
         else:
             time_info = ""
-        print(f"  Batch {batch_num}: {len(batch)} entries {time_info} -> {os.path.basename(srt_path)}")
+        is_last = batch_num == last_non_empty_batch_num
+        last_marker = " [outro warning attached]" if is_last and not split_only else ""
+        print(f"  Batch {batch_num}: {len(batch)} entries {time_info} -> {os.path.basename(srt_path)}{last_marker}")
 
         # --split-only: 只產 SRT 檔，跳過 prompt 產生
         if split_only:
@@ -288,6 +332,11 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en",
                 + glossary_text.strip()
                 + "\n"
             )
+
+        # 末段 batch 特別警告：強化 1:1 條目對齊，預防 outro drift
+        # （見 OUTRO_WARNING 模組級註解；2026-04-30 Karpathy distill 來源）
+        if is_last:
+            prompt_text += "\n" + OUTRO_WARNING
         prompt_path = os.path.join(output_dir, f"{video_id}_prompt_batch_{batch_num}.txt")
         with open(prompt_path, 'w') as f:
             f.write(prompt_text)
