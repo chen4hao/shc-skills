@@ -35,6 +35,13 @@ argument-hint: "[URL, local file path, or content source]"
    - **影片/podcast URL**（YouTube、Spotify、Apple Podcasts 等）：**禁止 WebFetch / WebSearch 先行找替代來源**——YouTube 頁面只回傳 minified JS；Apple Podcasts URL yt-dlp 原生支援（ApplePodcasts extractor，直接抓完整音訊 mp3）。直接跳到步驟 3 的字幕擷取流程，`download.py` 會同時輸出影片 metadata（Title、Channel、Upload date、Duration、Description），這是影片類來源的**唯一 metadata 來源**。**只有在 `download.py` 首次失敗後才走 WebSearch fallback**。
      - **Apple Podcasts 特別注意**：description 通常只列嘉賓（「ft. {嘉賓}」）而無主持人姓名，Whisper STT 對中文主持人姓名有系統性誤聽（2026-04-23 實例：「宋晏仁」被聽成「宋燕仁」）。**preflight 階段必須用 channel name 從 YouTube 或官方網站取得主持人姓名正字拼法**，不依賴 transcript。見 `feedback_podcast_host_name_verification.md`。
    - **網頁 URL**（非影片）：使用 WebFetch 取得完整內容。若內容過長或需要更多細節，進行第二次 fetch 聚焦於引用語句、數據、故事等細節。
+     - **已知擋的網域**（必跳過 WebFetch，直接走專用腳本）：
+       - `mp.weixin.qq.com`（微信公眾號）：WebFetch 必回「環境異常驗證」頁，無例外。用一鍵腳本：
+         ```bash
+         uv run --with requests --with beautifulsoup4 --with lxml \
+           python3 $SCRIPTS/fetch_wx_article.py "{URL}"
+         ```
+         stdout 一次印齊 `TITLE` / `AUTHOR` / `NICKNAME` / `PUBLISH_DATE` / `BODY_PATH` / `CHARS` / `LINES`，主代理拿到後直接規劃 Read 批次（中文 limit=40-50）→ 適用性評估 → advisor → Write。**禁止**手工 curl + 多步 grep og:title / var nickname / var ct + date -r + wc -l 的零散流程（已內建於腳本）。詳見 `feedback_wechat_article_fetch.md`。
    - **Auth-gated 學習平台 URL**（`learn.deeplearning.ai`、`coursera.org`、`udemy.com`、`edx.org` 等需登入才能看課程內容的平台）：**禁止先 WebFetch 再 fallback**——頁面在 auth wall 後，WebFetch 只拿到 marketing catalog，小模型會基於訓練集對「課程在講什麼」產生幻覺（2026-04-20 DL.AI 教訓：首次 advisor 因此誤判為「內容是幻覺」，使用者打斷兩次才走回正軌）。DL.AI 專用一鍵腳本：
      ```bash
      uv run --with browser-cookie3 --with requests --with beautifulsoup4 python3 \
@@ -97,6 +104,87 @@ argument-hint: "[URL, local file path, or content source]"
 7. **Write 前 call advisor**（必要）：在用 Write 工具寫入最終 markdown 筆記**之前**，call `advisor()` 一次。**最佳時機**是「原文通讀完、骨架 Write 完、條件區塊候選素材計數已在 context 中列出後」——此時 advisor 能對條件區塊取捨、作者 bio 表述、核心論點措辭給出最大價值的建議。**不要拖到 finalize 全部完成後才 call**（見 `feedback_distill_advisor_timing.md`）。理由：Write 是 substantive work（不可逆的交付物生成），advisor 會檢查結構完整性、metadata 正確性、條件區塊的適用性判斷是否合理。補單章/重寫彙總也適用（見 `feedback_distill_preflight_content_check.md`）。advisor 無參數，自動轉發完整 context。
 8. **儲存檔案**：將完整輸出儲存為 markdown 檔案（見下方儲存規則）。若步驟 3 有產生 SRT 字幕檔，在輸出末尾附上字幕檔路徑。
 
+---
+
+## 🔴 送出前 hard-checklist 三列對賬（強制適用所有並行訊息）
+
+**所有包含 ≥2 工具呼叫的訊息送出前**，必須在回覆 text 末尾按以下**三列**格式逐字寫出，**逐項對應**而非整體目測：
+
+```
+Hard checklist 計畫: {tool1}, {tool2}, ..., {toolN}（N 項）
+逐 invoke 名實列:    <invoke name="{x1}">, <invoke name="{x2}">, ..., <invoke name="{xN}">
+逐項對應確認:        tool1 ↔ x1 ✓ / tool2 ↔ x2 ✓ / ... / toolN ↔ xN ✓
+```
+
+任何一項對應不上 → 寫「❌ 缺 {tool_k}，補上再送」並重新組裝；**禁止送出**。
+
+**🔴 禁用整體性背書字串（2026-04-27 升級，9 次累犯後強化）**：
+
+下列**整體性簡寫**會讓主代理在不做實質檢驗的情況下「形式上完成 checklist」，實證會誤導送出：
+
+- ❌ `✅ match → send`
+- ❌ `all match`
+- ❌ `= N tools ✅`
+- ❌ `整體像 N 個`
+- ❌ `兩列一致`（雖然字數一致但 invoke 標籤可能不符）
+
+必須**把每個 invoke 標籤名展開**並逐項對應到計畫，**差一個對應 = 禁送**。「逐項對應確認」那行不能用「all checked」概括，必須列出每一對。
+
+**特別容易漏項的情境**（每個都已多次累犯）：
+- preflight 7 工具齊發（1 Grep + 5 Read + 1 download.py）—— 漏 download.py 是最常見模式
+- 訊息 2 / 訊息 3 啟動 N 翻譯子代理 + advisor + Write skeleton —— advisor 漏發第 9 次累犯（見 `feedback_message3_advisor_recidivism.md`、`feedback_advisor_send_assembly_check.md`）
+- finalize + advisor + Write 完整版並行 —— 兩者零依賴必並行（見 `feedback_finalize_advisor_parallel.md`，已第 6 次累犯）
+- drift 修復後寫 patch script + 跑 patch 並行
+- 書籍 distill 啟動 ≥3 子代理時必含 advisor（見 `feedback_book_distill_advisor_before_launch.md`）
+
+**違規徵象**：
+- text 中寫兩列字串完全一致 + ✅ match，但實際 `<invoke>` 標籤少 1 個（漏 advisor）—— 第 8、9 次累犯模式
+- 送出後才發現「咦剛才好像沒 advisor」—— 此時看 `feedback_finalize_advisor_parallel.md` 的「漏並行禁補 call」邊界規則：下一輪有零依賴非 advisor 工具（finalize / Write）→ 必同訊息並行補；下一輪只剩 advisor 單獨可發 → 禁補、等自然窗口
+
+詳見 `feedback_advisor_send_assembly_check.md`、`feedback_agent_advisor_hard_checklist.md`、`feedback_finalize_advisor_parallel.md`。
+
+**🔴 前置 yes/no gate（2026-04-29 升級，The Creative Act distill 同 task 4 連犯後新增）**：
+
+在寫 hard checklist 三列之前，**先在 text 中寫一行**：
+
+```
+advisor 是否已在計畫中？yes/no
+```
+
+若 **no** → 立即在計畫中加入 advisor（除非該訊息只剩 advisor 單獨可發 → 走 feedback_finalize_advisor_parallel 的「禁補等自然窗口」路線）。理由：hard checklist 三列對賬已被熟悉感打穿（同 task 連犯 4-7 次），需前置 gate 取代事後對賬。
+
+**🔴 emoji 編號強制錨點**：
+
+hard checklist 三列的「逐 invoke 名實列」與「逐項對應確認」必須用 emoji 編號（1️⃣ 2️⃣ 3️⃣ ...）讓每個 invoke 有強制視覺錨點。advisor 必須有獨立 emoji 編號。違規徵象：用「✅ match」「all checked」「= N tools ✅」等整體背書字串繞過逐項對應。
+
+**🔴 invoke 順序保險法**：
+
+若已多次漏 advisor，可採「逆序寫法」——準備 invoke 區塊時**先寫 advisor invoke 再寫其他**（advisor 在前），確保 advisor invoke 不會因為「寫到最後忘了」而漏發。
+
+詳見 `feedback_advisor_4time_recidivism_hardstop.md`。
+
+**🔴 invoke 順序保險法（2026-04-30 第 11-15 次累犯後強制立規）**：
+
+advisor 並行訊息中，**advisor invoke 必為 tool_use block 中第一個 `<invoke>` 標籤**。其他工具（Bash / Read / Edit / Write / Agent）寫在 advisor 之後。
+
+理由：「寫到最後忘了」是漏 advisor 的主導模式；逆序寫法把 advisor 從「最易遺漏位置」搬到「最不易遺漏位置」。
+
+**雙重 send 前檢查**：
+
+1. 寫完 hard checklist 三列後，在 mental list 上對每個工具放一個 ☐：
+   ```
+   - ☐ advisor → 寫 invoke 第一
+   - ☐ Edit X → 寫 invoke 第二
+   - ☐ Write Y → 寫 invoke 第三
+   ```
+2. 組裝 `<function_calls>` 區塊時，每寫完一個 `<invoke>` 標籤就把對應 ☐ 改 ☑
+3. 寫完最後一個 invoke，mental list 應全 ☑
+4. 若 mental list 還有 ☐ → 立即補對應 invoke 後再 send
+
+2026-04-30 Andrew Huberman Memory Essentials distill 同 task 5 連犯（第 11-15 次）證明：hard checklist 三列、emoji 編號、前置 yes/no gate 都已被熟悉感打穿。invoke 順序保險法是更基礎的物理層防護——advisor 不寫在最前 = 必漏的概率顯著 > 寫在最前。
+
+---
+
 ## 大型內容分段處理規則
 
 本步驟在來源為**大型內容**時執行。一般網頁文章、短影片跳過此步驟。
@@ -144,6 +232,10 @@ argument-hint: "[URL, local file path, or content source]"
 2. 用 `$SCRIPTS/epub_extract.py ... --all --isolate` 提取所有章節為獨立 .txt 檔（存到 `{專案輸出目錄}/_tmp_extract_<hash>/`，因為子代理無法存取 `/tmp/`；`--isolate` 強制加 epub hash 後綴防 session 衝突，stdout 印 `EXTRACT_DIR=<實際路徑>`，後續統一用此路徑）
 3. **Content-verify**：用 Bash `sed -n '3p' {EXTRACT_DIR}/ch003*.txt` 取第 3 行書名（**不用 Read 工具**），對照步驟 0 的 OPF `TITLE`——不符即停（見 `feedback_epub_session_conflict.md` 與 `feedback_content_verify_scope_strict.md`）
 4. 按章節自然邊界規劃分段（每段可包含 1-3 章，視大小而定）
+5. **章節結構掃描禁忌**（2026-04-26 Kettlebell S&S 教訓）：
+   - **章名抓取一輪 awk**：`awk 'FNR==1{f=FILENAME; sub(".*/","",f); print "=="f"=="} FNR==4{print substr($0,1,130); nextfile}' {EXTRACT_DIR}/ch*.txt`——一次取所有章名（章名通常在第 4 行）。**禁先用 head 看前 3 行**——多為重複的書名 header，零章名資訊（見 `feedback_epub_chapter_title_oneshot_awk.md`）
+   - **<100B 章節零 Read**：從 `--list` 的 size 直接判斷為 PART 分隔頁 / cover / dedication，不需 Read 確認（見 `feedback_epub_distill_efficiency.md` 規則 1）
+   - **禁主代理 Read intro / 前言章節**（如 "Introduction"、"Preface"、各書的「導論」性質開場章，包括書中第一個概論性章節如 Pavel 的 "SIMPLE & SINISTER"、"THE RUSSIAN KETTLEBELL" 等）——子代理會獨立讀，主代理 Read 是純冗餘且內容多重複出現在大章子代理的產出中（見 `feedback_epub_distill_efficiency.md` 規則 9）
 
 #### 步驟 2：並行讀取所有頁面
 
@@ -667,6 +759,36 @@ uv run python3 $SCRIPTS/dedup.py "/tmp/distill-{VIDEO_ID}"
 
 執行後，清理過的檔案存為 `*.clean.srt`。確認至少有一個英文 `.clean.srt` 檔。
 
+#### 步驟 B.5：辨識誤聽 → 寫 glossary（split_batches 一次到位）
+
+dedup.py 完成後、**split_batches.py 之前**，**第一步**用 `scan_mishearing.py` 自動掃已知 pattern：
+
+```bash
+uv run python3 $SCRIPTS/scan_mishearing.py "/tmp/distill-{VIDEO_ID}/{clean.srt}"
+```
+
+- stderr：人類可讀的命中摘要（人名 / 產品 / 技術名詞）
+- stdout：`wrong=correct,wrong=correct,...` 字串可**直接貼到** `finalize_video_distill.py --mishearing-pairs`
+- pattern 來源：`feedback_youtube_mishearing_common.md`（累積字典），collision 風險高的 pair（如 "cloud code" 撞 literal "cloud"）只列在 stderr 提醒人工判斷，不進 stdout
+
+**第二步：人工補充 episode-specific 誤聽**。scan 完成後，Read 整檔 SRT（短片，N×4 ≤ 600 行）或 head+tail（長片），對照 download.py stdout 的 Title/Description，找 scan 未涵蓋的本集專屬誤聽（嘉賓人名、技術詞、產品代號）。識別出 ≥1 項即寫 glossary 到 `/tmp/distill-{VIDEO_ID}/glossary.md`（cleanup 會自動清掉），內容含：
+
+- 字幕誤聽 → 權威拼法對照表（帶權威來源，如標題/description）
+- 必保留原文的專有名詞清單
+- 跨 batch 統一中譯表
+
+接著 split_batches.py **一次帶 `--glossary` 跑**（`--glossary` 接 .md 檔路徑，不是 inline string）：
+
+```bash
+uv run python3 $SCRIPTS/split_batches.py "/tmp/distill-{VIDEO_ID}/{clean.srt}" "{專案輸出目錄}" "{VIDEO_ID}" --auto-batches --glossary "/tmp/distill-{VIDEO_ID}/glossary.md"
+```
+
+**禁止**：
+- 先跑無 `--glossary` 看 stdout 試水溫、再重跑加 `--glossary`。SRT Read 已能識別誤聽，重跑只是浪費 1 個 Bash + 覆寫 prompt 檔（2026-04-27 AgentCraft 教訓）
+- 跳過 `scan_mishearing.py` 自寫 ad-hoc awk grep 數命中（2026-04-28 Matt Pocock 教訓：手寫 9 pattern awk 是冗餘——標準字典已涵蓋常見誤聽，scan 工具 stdout 可直接 pipe 給 finalize）
+
+詳細規則見 `feedback_split_batches_glossary_flag.md`、`feedback_youtube_mishearing_common.md`、`feedback_subtitle_typo_restoration_in_prompt.md`。
+
 #### 步驟 C：翻譯為雙語（子代理並行翻譯）
 
 **核心策略：以原文字幕為主軌（master track），翻譯產生另一語言的字幕。**
@@ -755,6 +877,10 @@ uv run python3 $SCRIPTS/reverse_substitution.py \
 1. **Bash `wc -l "{srt_path}"`** — 取得原文 SRT 總行數，計算通讀需要的 Read 次數（英文 limit=500、中文 limit=300；`N = ceil(total_lines / limit)`）。**禁止憑感覺湊整數發 Read，必會超出檔案尾觸發 warning**
 2. **N 個並行 Read** — 在同一訊息依 wc 結果通讀原文 SRT，為撰寫筆記做準備
 3. **Write 筆記骨架初版** — 寫入 metadata block（作者、來源、日期、核心論點、字幕檔清單）、One Page Infograph 副標、所有必要與條件區塊的標題 + `<!-- 待填入 -->` 佔位符。作者姓名**以 download.py stdout 的 Show Notes 為準**（auto-caption 常誤聽外國姓氏，例如 Glyman→Lyman）
+
+**🔴 ≤3 batch 跳 sample-first 場景：skeleton 改用 advisor 補位**
+
+當 `split_batches.py --auto-batches` 給出 ≤3 batch 且訊息 2/3 已合併為「啟動全部 batch 唯一訊息」時，**skeleton Write 直接省略**。理由：(1) 訊息 2 = N Agent + advisor() 總計 N+1 工具已達並行最低門檻；(2) 最終 Write 完整版會整檔覆寫 skeleton，骨架是純浪費（見 `feedback_video_distill_skeleton_skip.md`）；(3) advisor() 補位是更高 ROI 的選項——既滿足並行防退化，又能對 batch 啟動方案做前置 review。**避免規則衝突**：feedback_distill_parallel_srt_read.md 的「訊息 2 退化防護」要求補生產性工具，但「生產性工具」不限定為 skeleton——advisor() 是更優選擇。2026-04-28 Matt Pocock 教訓：寫了 skeleton 後又被最終 Write 整檔覆寫，是規則內部衝突誘發的純浪費。
 
 **讀 SRT 時即時捕獲引述**：遇到「X said」「as X put it」「Calvin said, look...」等引述訊號，立即在回覆的 text 中寫一個「引述清單」（`HH:MM X 引述者→真實講者 Y`），作為撰寫 Key Quote 歸屬的依據，避免把引述的他人觀點歸為講者本人。
 
