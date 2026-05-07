@@ -338,7 +338,9 @@ advisor 並行訊息中，**advisor invoke 必為 tool_use block 中第一個 `<
 
 ## H1 格式（assemble 依此辨識章節）
 
-**H1 必須為固定格式**：`# Ch{N}: {Title}`（N=阿拉伯數字、Title=英文原章名，例如 `# Ch8: Greater Fools`、Prologue 用 `# Ch0: Prologue`）。第二行起再放完整書名/副標。禁止自由發揮。
+**H1 必須為固定格式**：`# Ch{N}: {Title}`（N=**純阿拉伯數字**、Title=英文原章名，例如 `# Ch8: Greater Fools`、Prologue 用 `# Ch0: Prologue`）。第二行起再放完整書名/副標。禁止自由發揮。
+
+⚠️ **Bonus / Appendix 章用純數字延續主章編號**（禁用 `ChA` `ChB1` `ChAppx` 等字母編號）：`assemble_book_notes.py --use-h1` 的 H1 regex 只認 `Ch\d+:`，字母編號會 fallback 到 epub txt 序號（產出如 `Ch20-untitled-33.md` 這類錯誤命名，需事後 mv 修正）。例如書中有主章 1-15 + Bonus 1-2 + Appendix：Bonus 1 子代理用 `# Ch16:`、Bonus 2 用 `# Ch17:`、Appendix 用 `# Ch18:`。若想在檔名區分 Bonus / Appendix，可在主代理事後在檔名加註（如 `{prefix}-Ch16-Bonus-Best-of-Blog.md`），但子代理 H1 必須純數字。詳見 `feedback_assemble_chapter_regex_limit.md`。
 
 ## 完整格式結構
 

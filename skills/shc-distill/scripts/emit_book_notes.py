@@ -12,7 +12,7 @@ under the project output directory.
 
 Usage:
     uv run python3 $SCRIPTS/emit_book_notes.py \\
-      <tasks_dir> <output_dir> <prefix> [--dry-run]
+      <tasks_dir> <output_dir> <prefix> [--dry-run] [--print-files-table]
 
 Arguments:
     tasks_dir      — parent dir of .output JSONL files (from task notifications)
@@ -33,6 +33,11 @@ HTML entity cleaning:
 
 Code fence stripping:
     Leading/trailing ```markdown / ``` wrappers if present.
+
+--print-files-table:
+    After writing files, print a Markdown table to stdout with columns:
+    | Section | 章節 | 標題 | 檔案 |
+    Suitable for pasting directly into 彙總.md as the chapter index table.
 """
 from __future__ import annotations
 
@@ -168,6 +173,7 @@ def emit(
     output_dir: Path,
     prefix: str,
     dry_run: bool = False,
+    print_files_table: bool = False,
 ) -> int:
     """Process all .output files in tasks_dir, write .md files to output_dir.
 
@@ -180,6 +186,7 @@ def emit(
 
     written = 0
     errors = 0
+    written_records: list[tuple[str, int, str, str]] = []
     for out_file in output_files:
         raw = extract_final_assistant_text(out_file)
         if raw is None:
@@ -208,13 +215,28 @@ def emit(
 
         if dry_run:
             print(f"[dry] {h_prefix}{n}: {title}  →  {filename}  ({len(cleaned)} chars)")
+            written_records.append((h_prefix, n, title, filename))
             continue
 
         dest.write_text(cleaned + "\n", encoding="utf-8")
         print(f"[ok]  {h_prefix}{n}: {title}  →  {filename}", file=sys.stderr)
         written += 1
+        written_records.append((h_prefix, n, title, filename))
 
     print(f"\nDone: wrote {written} files, {errors} errors", file=sys.stderr)
+
+    if print_files_table and written_records:
+        # sort by (h_prefix, n) — Ch first then Group, ascending N
+        written_records.sort(key=lambda r: (0 if r[0] == "Ch" else 1, r[1]))
+        print("\n## 分章索引（複製貼進彙總.md）\n")
+        print("| Section | 章節 | 標題 | 檔案 |")
+        print("|---------|------|------|------|")
+        for idx, (h_prefix, n, title, filename) in enumerate(written_records, start=1):
+            section = f"Part {idx}"
+            chapter = f"{h_prefix}{n}"
+            print(f"| {section} | {chapter} | {title} | `{filename}` |")
+        print()
+
     return written
 
 
@@ -224,6 +246,11 @@ def main() -> None:
     ap.add_argument("output_dir", type=Path, help="Project output directory for .md files")
     ap.add_argument("prefix", help="Filename prefix, e.g. '2026-04-更新粒線體根治慢性病'")
     ap.add_argument("--dry-run", action="store_true", help="Show what would be written")
+    ap.add_argument(
+        "--print-files-table",
+        action="store_true",
+        help="After writing, print a Markdown table of (Section/章節/標題/檔案) for pasting into 彙總.md",
+    )
     args = ap.parse_args()
 
     tasks_dir = args.tasks_dir.expanduser().resolve()
@@ -236,7 +263,13 @@ def main() -> None:
         print(f"ERROR: output_dir is not a directory: {output_dir}", file=sys.stderr)
         sys.exit(1)
 
-    emit(tasks_dir, output_dir, args.prefix, args.dry_run)
+    emit(
+        tasks_dir,
+        output_dir,
+        args.prefix,
+        dry_run=args.dry_run,
+        print_files_table=args.print_files_table,
+    )
 
 
 if __name__ == "__main__":
