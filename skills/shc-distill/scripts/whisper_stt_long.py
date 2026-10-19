@@ -83,7 +83,7 @@ def probe_duration(audio_path):
         r = subprocess.run(
             ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
              '-of', 'default=nw=1:nk=1', audio_path],
-            capture_output=True, text=True, check=True, timeout=60,
+            capture_output=True, text=True, errors='replace', check=True, timeout=60,
         )
         return float(r.stdout.strip())
     except Exception as e:
@@ -106,7 +106,7 @@ def segment_audio(audio_path, segments_dir, segment_seconds):
          '-segment_time', str(segment_seconds),
          '-reset_timestamps', '1',
          pattern],
-        capture_output=True, text=True,
+        capture_output=True, text=True, errors='replace',
     )
     if result.returncode != 0:
         print(f"ffmpeg failed: {result.stderr[-500:]}", file=sys.stderr)
@@ -133,7 +133,7 @@ def run_mlx_whisper(seg_path, seg_output_dir, language, model, hall_threshold):
 
     print(f"  [whisper] START {os.path.basename(seg_path)}")
     # No timeout here: each segment is bounded by --segment-minutes * ~5x realtime max
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, errors='replace')
     if r.returncode != 0:
         print(f"  [whisper] FAILED {os.path.basename(seg_path)}: {r.stderr[-300:]}")
         return None

@@ -16,9 +16,8 @@
   --split-only             只產 batch SRT 檔，不產翻譯 prompt 和 agent_config.json
                            用於純分段萃取流程（如影片 distill 分段）
   --auto-batches           依條目數自動選擇批次數（覆蓋 NUM_BATCHES 位置參數）
-                           ≤450 條 → 2-3 批（跳過 sample-first 門檻，可一次性同訊息啟動）
-                           450-1200 條 → 每批 ~200 條
-                           >1200 條 → 每批 ~250 條
+                           每批 ≤90 條，至少 2 批（避免子代理交回內容被截斷）
+                           ≤270 條 → 2-3 批（跳過 sample-first 門檻，可一次性同訊息啟動）
   --glossary PATH          指向主代理寫好的詞彙表 .md 檔（產品名保留清單、統一中譯表、
                            常見字幕誤聽變體還原表）。腳本讀取後附加到每個
                            prompt_batch_N.txt 的末尾，取代「主代理在每個 Agent call
@@ -204,24 +203,17 @@ def split_by_time(blocks, num_batches):
 
 # ── 自動批次數選擇 ────────────────────────────────────────
 
+MAX_ENTRIES_PER_BATCH = 90
+
 def auto_num_batches(total_entries: int) -> int:
     """依條目數自動選擇批次數。
 
-    目標優先順序：
-    1. 能用 ≤3 批就用 ≤3 批（跳過 sample-first 規則，可同訊息一次性啟動）
-    2. 每批 ≤ ~200 條（避免 sonnet 輸出截斷）
-    3. 總批次控制在合理範圍（避免主代理認知負擔）
+    每批 ≤ 90 條，至少 2 批。≤270 條 → 2-3 批，可跳過 sample-first。
 
-    決策表：
-    - ≤450 條 → 2-3 批（每批 ~150 條）：跳過 sample-first
-    - 450-1200 條 → 3-6 批（每批 ~200 條）
-    - >1200 條 → 5+ 批（每批 ~250 條）
+    上限理由：子代理用 SubagentHandback 交回時，內容約在 114 條處被截斷
+    （2026-10-19 g6MEDOY7tHo 實測：191 條一批只交回 114 條；88 條一批 13/13 完整）。
     """
-    if total_entries <= 450:
-        return max(2, math.ceil(total_entries / 150))
-    if total_entries <= 1200:
-        return math.ceil(total_entries / 200)
-    return math.ceil(total_entries / 250)
+    return max(2, math.ceil(total_entries / MAX_ENTRIES_PER_BATCH))
 
 
 # ── 主邏輯 ───────────────────────────────────────────────────
@@ -429,7 +421,7 @@ def main():
     ap.add_argument("--split-only", action="store_true",
                     help="Only produce batch SRT files, skip translation prompt generation")
     ap.add_argument("--auto-batches", action="store_true",
-                    help="Auto-select NUM_BATCHES by entry count (≤450→2-3 batches, ≤1200→~200/batch, else ~250/batch). Overrides NUM_BATCHES positional.")
+                    help="Auto-select NUM_BATCHES by entry count (≤90 entries/batch, min 2 batches; ≤270→2-3 batches). Overrides NUM_BATCHES positional.")
     ap.add_argument("--glossary", default=None,
                     help="Path to a .md file containing the main agent's glossary (product-name preservation list, unified translations, mishearing restoration table). Content is appended to every prompt_batch_N.txt, replacing the DRY-violating pattern of hand-pasting the same glossary into each Agent call.")
     args = ap.parse_args()

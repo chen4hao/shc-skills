@@ -1,4 +1,5 @@
 ---
+name: shc-distill
 description: "萃取網路文章、訪談、演講、影片、podcast、電子書(PDF/epub) 的學習重點精華，整理成結構化 markdown 筆記並儲存。當來源為訪談影片或 podcast 時，會自動擷取完整字幕並存為三個 SRT 字幕檔：英文(*.en.srt)、繁體中文(*.zh-tw.srt)、中英雙語(*.en&cht.srt)。當來源為大型內容（如電子書 PDF/epub，超過 50 頁）時，自動分段處理並用子代理並行萃取各段，最後產出分段筆記與彙總筆記。當使用者提供 URL 或本地檔案路徑並要求萃取重點、整理筆記、提取學習精華、summarize key takeaways 時觸發。Use when user shares a URL or local file path and wants to extract insights, distill key takeaways, summarize learnings, or create study notes from articles, interviews, talks, videos, podcasts, essays, blog posts, or books (PDF/epub). When the source is an interview video or podcast, automatically extracts and saves three SRT subtitle files: English (*.en.srt), Traditional Chinese (*.zh-tw.srt), and bilingual (*.en&cht.srt). When the source is a large document (e.g., book PDF/epub over 50 pages), automatically segments content and processes each segment in parallel using subagents, producing per-segment notes and a consolidated summary."
 argument-hint: "[URL, local file path, or content source]"
 ---
@@ -106,82 +107,29 @@ argument-hint: "[URL, local file path, or content source]"
 
 ---
 
-## 🔴 送出前 hard-checklist 三列對賬（強制適用所有並行訊息）
+## 🔴 Advisor 序列前置（取代所有文字層防護機制）
 
-**所有包含 ≥2 工具呼叫的訊息送出前**，必須在回覆 text 末尾按以下**三列**格式逐字寫出，**逐項對應**而非整體目測：
+啟動「substantive work」前，**advisor 必須單獨一個訊息序列前置**，禁止與該 substantive work 並行。
 
-```
-Hard checklist 計畫: {tool1}, {tool2}, ..., {toolN}（N 項）
-逐 invoke 名實列:    <invoke name="{x1}">, <invoke name="{x2}">, ..., <invoke name="{xN}">
-逐項對應確認:        tool1 ↔ x1 ✓ / tool2 ↔ x2 ✓ / ... / toolN ↔ xN ✓
-```
+**Substantive work 定義**（任一觸發）：
+- 啟動 ≥3 個 Agent 子代理
+- Write ≥10KB 的最終交付物（彙總筆記、長 markdown）
+- assemble + cleanup + Write 多步收尾組合
 
-任何一項對應不上 → 寫「❌ 缺 {tool_k}，補上再送」並重新組裝；**禁止送出**。
+**流程**：
+1. 訊息 N：`advisor()` 單獨呼叫（無其他工具）
+2. 等 advisor 回傳建議
+3. 訊息 N+1：啟動 substantive work
 
-**🔴 禁用整體性背書字串（2026-04-27 升級，9 次累犯後強化）**：
+**例外（advisor 可省）**：
+- 純探索 / Read 階段（資料 gap 明顯，advisor 看不到完整 picture——見 `feedback_advisor_after_data_gathered.md`）
+- 純機械收尾（cleanup / mv / deterministic Bash 腳本）
+- 同 task 1 小時內已 call 過 advisor（一次 review 可涵蓋多個 substantive work）
+- 使用者親自審核並批准計畫（如 musk review 後的 "fix all"）
 
-下列**整體性簡寫**會讓主代理在不做實質檢驗的情況下「形式上完成 checklist」，實證會誤導送出：
+**為何序列前置取代並行**：2026-04 至 2026-05-19 advisor 並行漏發累積 15+ 次（含 2026-05-19 Leveraged Trading distill 5 連犯）。所有文字層防護（hard checklist 三列對賬、前置 yes/no gate、emoji 編號錨點、invoke 順序保險法、mental list ☐/☑）全部被熟悉感打穿——序列前置物理上消除「組裝多個 invoke 時遺漏 advisor」的可能性。代價多 1 輪 round-trip，換 100% 觸發率。
 
-- ❌ `✅ match → send`
-- ❌ `all match`
-- ❌ `= N tools ✅`
-- ❌ `整體像 N 個`
-- ❌ `兩列一致`（雖然字數一致但 invoke 標籤可能不符）
-
-必須**把每個 invoke 標籤名展開**並逐項對應到計畫，**差一個對應 = 禁送**。「逐項對應確認」那行不能用「all checked」概括，必須列出每一對。
-
-**特別容易漏項的情境**（每個都已多次累犯）：
-- preflight 7 工具齊發（1 Grep + 5 Read + 1 download.py）—— 漏 download.py 是最常見模式
-- 訊息 2 / 訊息 3 啟動 N 翻譯子代理 + advisor + Write skeleton —— advisor 漏發第 9 次累犯（見 `feedback_message3_advisor_recidivism.md`、`feedback_advisor_send_assembly_check.md`）
-- finalize + advisor + Write 完整版並行 —— 兩者零依賴必並行（見 `feedback_finalize_advisor_parallel.md`，已第 6 次累犯）
-- drift 修復後寫 patch script + 跑 patch 並行
-- 書籍 distill 啟動 ≥3 子代理時必含 advisor（見 `feedback_book_distill_advisor_before_launch.md`）
-
-**違規徵象**：
-- text 中寫兩列字串完全一致 + ✅ match，但實際 `<invoke>` 標籤少 1 個（漏 advisor）—— 第 8、9 次累犯模式
-- 送出後才發現「咦剛才好像沒 advisor」—— 此時看 `feedback_finalize_advisor_parallel.md` 的「漏並行禁補 call」邊界規則：下一輪有零依賴非 advisor 工具（finalize / Write）→ 必同訊息並行補；下一輪只剩 advisor 單獨可發 → 禁補、等自然窗口
-
-詳見 `feedback_advisor_send_assembly_check.md`、`feedback_agent_advisor_hard_checklist.md`、`feedback_finalize_advisor_parallel.md`。
-
-**🔴 前置 yes/no gate（2026-04-29 升級，The Creative Act distill 同 task 4 連犯後新增）**：
-
-在寫 hard checklist 三列之前，**先在 text 中寫一行**：
-
-```
-advisor 是否已在計畫中？yes/no
-```
-
-若 **no** → 立即在計畫中加入 advisor（除非該訊息只剩 advisor 單獨可發 → 走 feedback_finalize_advisor_parallel 的「禁補等自然窗口」路線）。理由：hard checklist 三列對賬已被熟悉感打穿（同 task 連犯 4-7 次），需前置 gate 取代事後對賬。
-
-**🔴 emoji 編號強制錨點**：
-
-hard checklist 三列的「逐 invoke 名實列」與「逐項對應確認」必須用 emoji 編號（1️⃣ 2️⃣ 3️⃣ ...）讓每個 invoke 有強制視覺錨點。advisor 必須有獨立 emoji 編號。違規徵象：用「✅ match」「all checked」「= N tools ✅」等整體背書字串繞過逐項對應。
-
-**🔴 invoke 順序保險法**：
-
-若已多次漏 advisor，可採「逆序寫法」——準備 invoke 區塊時**先寫 advisor invoke 再寫其他**（advisor 在前），確保 advisor invoke 不會因為「寫到最後忘了」而漏發。
-
-詳見 `feedback_advisor_4time_recidivism_hardstop.md`。
-
-**🔴 invoke 順序保險法（2026-04-30 第 11-15 次累犯後強制立規）**：
-
-advisor 並行訊息中，**advisor invoke 必為 tool_use block 中第一個 `<invoke>` 標籤**。其他工具（Bash / Read / Edit / Write / Agent）寫在 advisor 之後。
-
-理由：「寫到最後忘了」是漏 advisor 的主導模式；逆序寫法把 advisor 從「最易遺漏位置」搬到「最不易遺漏位置」。
-
-**雙重 send 前檢查**：
-
-1. 寫完 hard checklist 三列後，在 mental list 上對每個工具放一個 ☐：
-   ```
-   - ☐ advisor → 寫 invoke 第一
-   - ☐ Edit X → 寫 invoke 第二
-   - ☐ Write Y → 寫 invoke 第三
-   ```
-2. 組裝 `<function_calls>` 區塊時，每寫完一個 `<invoke>` 標籤就把對應 ☐ 改 ☑
-3. 寫完最後一個 invoke，mental list 應全 ☑
-4. 若 mental list 還有 ☐ → 立即補對應 invoke 後再 send
-
-2026-04-30 Andrew Huberman Memory Essentials distill 同 task 5 連犯（第 11-15 次）證明：hard checklist 三列、emoji 編號、前置 yes/no gate 都已被熟悉感打穿。invoke 順序保險法是更基礎的物理層防護——advisor 不寫在最前 = 必漏的概率顯著 > 寫在最前。
+詳見 `feedback_advisor_serial_before_substantive.md`、`feedback_text_layer_vs_tool_layer.md`、`feedback_finalize_advisor_parallel.md`。
 
 ---
 
@@ -271,18 +219,13 @@ advisor 並行訊息中，**advisor invoke 必為 tool_use block 中第一個 `<
 - `epub_extract.py --all --isolate [--skip-tail-epigraphs]`（mv 與 epub_extract 並行；`--skip-tail-epigraphs` 自動跳過尾部連續 untitled 章節，常為各章 epigraph 集合）
 - 等 stdout 印 `EXTRACT_DIR=...`，下一輪用 `sed -n '3p' {EXTRACT_DIR}/ch003*.txt` content-verify（不用 Read）
 
-**訊息 3（啟動子代理 + template + skeleton + advisor，全並行）**：
+**訊息 3a（advisor 序列前置）**：
+- `advisor()` 單獨呼叫，等回傳建議再進訊息 3b
+
+**訊息 3b（啟動子代理 + template + skeleton）**：
 - N 個 Agent calls（一次性，禁分批）
 - Write `_distill_template.md` 到 EXTRACT_DIR
-- Write 彙總骨架（佔位符版）到專案目錄
-- `advisor()` 同訊息並行
-- **送出前 hard checklist 對照**：在回覆 text 末逐字寫
-  ```
-  hard checklist: N Agent + 2 Write + 1 advisor + 0 Read = X tools
-  實際組裝:      N Agent + 2 Write + 1 advisor + 0 Read = X tools
-  ✅ match → send
-  ```
-  差一項禁送（見 `feedback_book_distill_advisor_recidivism.md`，已累犯 2 次）
+- Write 彙總骨架（佔位符版）到專案目錄（若預計 >16 子代理；≤16 可跳骨架）
 
 **訊息 4-N+3（等待期）**：
 - >12 子代理：每收到 completion 用 Edit 在彙總骨架對應位置回填 Top 1-3 takeaway + Top 1 quote

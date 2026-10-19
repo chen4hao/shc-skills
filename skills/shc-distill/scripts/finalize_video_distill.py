@@ -563,6 +563,8 @@ def main() -> None:
     ap.add_argument("--source-srt", default=None,
                     help="For ZH->EN flow: path to original zh clean SRT")
     ap.add_argument("--skip-cleanup", action="store_true")
+    ap.add_argument("--skip-extract", action="store_true",
+                    help="Skip step 1 (extract_translated_batches) if batch files already exist in project_dir")
     ap.add_argument("--allow-bad-timestamps", action="store_true",
                     help="Pass through to combine_zh to allow time-backward issues (end<start is auto-fixed regardless)")
     ap.add_argument("--check-title-terms", action="store_true",
@@ -591,8 +593,11 @@ def main() -> None:
     args = ap.parse_args()
 
     # Step 1: extract translated batches
-    run(["uv", "run", "python3", str(SCRIPT_DIR / "extract_translated_batches.py"),
-         args.tasks_dir, args.project_dir, args.video_id, args.target_lang])
+    if not args.skip_extract:
+        run(["uv", "run", "python3", str(SCRIPT_DIR / "extract_translated_batches.py"),
+             args.tasks_dir, args.project_dir, args.video_id, args.target_lang])
+    else:
+        print("Skipping Step 1 (extract_translated_batches) as requested by --skip-extract")
 
     # Step 2: combine batches
     combine_cmd = ["uv", "run", "python3", str(SCRIPT_DIR / "combine_zh.py"),
