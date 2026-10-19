@@ -104,8 +104,12 @@ def extract_final_assistant_text(output_file: Path) -> str | None:
 
     Task .output files have nested structure: msg.message.role / msg.message.content
     where content is either a string or a list of content blocks.
+
+    If the subagent returned its report via the SubagentHandback tool
+    (input.message), that report wins over any plain text block.
     """
     last_assistant_text: str | None = None
+    last_handback_text: str | None = None
     try:
         with output_file.open("r", encoding="utf-8") as f:
             for line in f:
@@ -115,6 +119,8 @@ def extract_final_assistant_text(output_file: Path) -> str | None:
                 try:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
                     continue
 
                 # Nested structure: msg.message.role
@@ -134,6 +140,13 @@ def extract_final_assistant_text(output_file: Path) -> str | None:
                         if isinstance(block, dict):
                             if block.get("type") == "text":
                                 texts.append(block.get("text", ""))
+                            elif (
+                                block.get("type") == "tool_use"
+                                and block.get("name") == "SubagentHandback"
+                                and isinstance(block.get("input"), dict)
+                                and isinstance(block["input"].get("message"), str)
+                            ):
+                                last_handback_text = block["input"]["message"]
                         elif isinstance(block, str):
                             texts.append(block)
                     if texts:
@@ -142,7 +155,7 @@ def extract_final_assistant_text(output_file: Path) -> str | None:
         print(f"WARN: not found: {output_file}", file=sys.stderr)
         return None
 
-    return last_assistant_text
+    return last_handback_text or last_assistant_text
 
 
 def parse_h1(content: str) -> tuple[str, int, str] | None:
