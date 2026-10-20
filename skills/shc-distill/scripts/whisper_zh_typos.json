@@ -3,6 +3,11 @@
   "_update_rule": "When adding a new typo pattern, update both this file and the memory markdown table.",
   "replacements": [
     {"wrong": "簡歷峰", "correct": "簡立峰", "context": "persons"},
+    {"wrong": "三交", "correct": "三焦", "context": "tcm"},
+    {"wrong": "皮胃", "correct": "脾胃", "context": "tcm"},
+    {"wrong": "八段頸", "correct": "八段錦", "context": "tcm"},
+    {"wrong": "軍臣卓史", "correct": "君臣佐使", "context": "tcm"},
+    {"wrong": "符苓", "correct": "茯苓", "context": "tcm"},
     {"wrong": "利丰", "correct": "簡立峰", "context": "persons"},
     {"wrong": "丁玲娟", "correct": "丁菱娟", "context": "persons"},
     {"wrong": "魏哲嘉", "correct": "魏哲家", "context": "persons"},

@@ -47,6 +47,8 @@ def parse_task_output(path: str) -> tuple[str, list[str]]:
                 obj = json.loads(line)
             except Exception:
                 continue
+            if not isinstance(obj, dict):
+                continue
             t = obj.get("type")
             msg = obj.get("message", {})
             content = msg.get("content", [])
@@ -64,6 +66,17 @@ def parse_task_output(path: str) -> tuple[str, list[str]]:
                         c.get("text", "")
                         for c in content
                         if isinstance(c, dict) and c.get("type") == "text"
+                    ]
+                    # Newer subagents return their final report via the
+                    # SubagentHandback tool (input.message) instead of a text block.
+                    parts += [
+                        c["input"]["message"]
+                        for c in content
+                        if isinstance(c, dict)
+                        and c.get("type") == "tool_use"
+                        and c.get("name") == "SubagentHandback"
+                        and isinstance(c.get("input"), dict)
+                        and isinstance(c["input"].get("message"), str)
                     ]
                     if parts:
                         assistant_texts.append("\n".join(parts))
@@ -217,6 +230,8 @@ def main() -> int:
             batches[batch_num] = entries
 
     if not batches:
+        for name, reason in skipped:
+            print(f"  SKIPPED: {name}: {reason}", file=sys.stderr)
         print(f"error: no translation tasks found for VIDEO_ID={args.video_id}", file=sys.stderr)
         return 1
 

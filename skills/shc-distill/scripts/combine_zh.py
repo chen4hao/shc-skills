@@ -111,17 +111,19 @@ def auto_fix_bad_end(text):
 
 # === 逐批合併並驗證 ===
 combined = ""
-batch_files = sorted(glob.glob(f"{proj_dir}/{video_id}_{target_lang}_batch_*.srt"))
+batch_files = sorted(glob.glob(f"{proj_dir}/{video_id}_{target_lang}_batch_*.srt"), key=lambda p: int(re.search(r'batch_(\d+)', p).group(1)) if re.search(r'batch_(\d+)', p) else 0)
 total_batch_entries = 0
 batch_diffs = []  # (batch_num, source_count, target_count, diff)
 all_issues = []
 
 for f in batch_files:
-    content = open(f).read()
+    content = open(f).read().strip()
     # 清理子代理可能殘留的 code fence 標記
     content = re.sub(r' *```(?:srt)? *', '', content)
     batch_count = count_entries(content)
-    combined += content
+    if combined and not combined.endswith("\n\n"):
+        combined += "\n\n"
+    combined += content + "\n"
     total_batch_entries += batch_count
 
     # 逐批 diff：比對同名 source batch

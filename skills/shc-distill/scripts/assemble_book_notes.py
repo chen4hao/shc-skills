@@ -74,9 +74,15 @@ def slugify(s: str, max_len: int = 40) -> str:
 
 
 def parse_task_output(path: str) -> tuple[str, str]:
-    """Return (first_user_text, last_assistant_text) from a JSONL task output."""
+    """Return (first_user_text, last_assistant_text) from a JSONL task output.
+
+    If the subagent returned its report via the SubagentHandback tool
+    (input.message), that report wins over any plain text block, since the
+    remaining text blocks are usually short progress notes.
+    """
     first_user = ""
     last_assistant = ""
+    last_handback = ""
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -85,6 +91,8 @@ def parse_task_output(path: str) -> tuple[str, str]:
             try:
                 obj = json.loads(line)
             except Exception:
+                continue
+            if not isinstance(obj, dict):
                 continue
             t = obj.get("type")
             msg = obj.get("message", {})
@@ -112,9 +120,18 @@ def parse_task_output(path: str) -> tuple[str, str]:
                     ]
                     if parts:
                         last_assistant = "\n".join(parts)
+                    for c in content:
+                        if (
+                            isinstance(c, dict)
+                            and c.get("type") == "tool_use"
+                            and c.get("name") == "SubagentHandback"
+                            and isinstance(c.get("input"), dict)
+                            and isinstance(c["input"].get("message"), str)
+                        ):
+                            last_handback = c["input"]["message"]
                 elif isinstance(content, str):
                     last_assistant = content
-    return first_user, last_assistant
+    return first_user, last_handback or last_assistant
 
 
 def main() -> int:
