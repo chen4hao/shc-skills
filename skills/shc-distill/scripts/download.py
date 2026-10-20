@@ -54,35 +54,41 @@ print(f"  可用字幕: {has_native_subs}")
 # === 階段 1：只下載字幕 + metadata（不下載影音） ===
 if has_native_subs:
     print("=== 階段 1：嘗試下載字幕 ===")
-    # 只下 en 單一語言；en-orig 與 en 內容經實測完全一致（dedup 後條目數相同），
-    # 下載兩份是網路與磁碟浪費。若 en 不存在才在 fallback 區塊中嘗試 en-orig。
-    _sub_result = subprocess.run([
-        "yt-dlp",
-        "--cookies-from-browser", "chrome",
-        "--write-subs", "--write-auto-subs",
-        "--sub-langs", "en",
-        "--convert-subs", "srt",
-        "--write-info-json",
-        "--skip-download",
-        "-o", os.path.join(temp_dir, "%(id)s.%(ext)s"),
-        url
-    ], check=False)
-    # Fallback：若只下 en 沒拿到任何字幕檔，退回試 en-orig
-    _got_subs = bool(glob.glob(os.path.join(temp_dir, "*.en.srt")) or
-                     glob.glob(os.path.join(temp_dir, "*.en.vtt")))
-    if not _got_subs:
-        print("  ⚠️ en 字幕未取得，fallback 嘗試 en-orig ===")
+    # 字幕軌優先序：人工 en > 自動 en-orig（原聲 ASR）> 自動 en。
+    # 開了自動配音的頻道（Flirting with Models、My First Million 等），自動 en
+    # 是「配音成其他語言 → 回譯英文」的失真版本，原聲在 en-orig。
+    if 'en' in _subs:
+        _primary, _fallback = "en", "en-orig"
+    elif 'en-orig' in _auto:
+        _primary, _fallback = "en-orig", "en"
+    else:
+        _primary, _fallback = "en", "en-orig"
+
+    def _download_subs(lang):
         subprocess.run([
             "yt-dlp",
             "--cookies-from-browser", "chrome",
             "--write-subs", "--write-auto-subs",
-            "--sub-langs", "en-orig",
+            "--sub-langs", lang,
             "--convert-subs", "srt",
             "--write-info-json",
             "--skip-download",
             "-o", os.path.join(temp_dir, "%(id)s.%(ext)s"),
             url
         ], check=False)
+        # en-orig 改名為 .en.*，下游 dedup.py / finalize 只認 .en
+        for f in glob.glob(os.path.join(temp_dir, "*.en-orig.*")):
+            os.replace(f, f.replace(".en-orig.", ".en."))
+        return bool(glob.glob(os.path.join(temp_dir, "*.en.srt")) or
+                    glob.glob(os.path.join(temp_dir, "*.en.vtt")))
+
+    _sub_track = _primary
+    if not _download_subs(_primary):
+        print(f"  ⚠️ {_primary} 字幕未取得，fallback 嘗試 {_fallback} ===")
+        _sub_track = _fallback
+        if not _download_subs(_fallback):
+            _sub_track = "none"
+    print(f"SUB_TRACK={_sub_track}")
 elif _preflight_info is not None:
     # Preflight 成功但無字幕：直接從 preflight JSON 落地 info.json，跳過有問題的 Stage 1
     print("=== 階段 1：跳過（preflight 無可用字幕） ===")
