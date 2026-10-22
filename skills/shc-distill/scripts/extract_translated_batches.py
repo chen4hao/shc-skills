@@ -31,11 +31,43 @@ import sys
 
 
 def parse_task_output(path: str) -> tuple[str, list[str]]:
-    """Return (first_user_text, all_assistant_texts) from a JSONL task output.
+    """Return (first_user_text, all_assistant_texts) from a JSONL task output or Antigravity message JSON.
 
     Collects ALL assistant messages to handle subagents that hit output limits
     and produce multiple responses (each containing partial SRT content).
     """
+    if path.endswith(".json"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                obj = json.load(f)
+            if isinstance(obj, dict):
+                title = obj.get("renderDetails", {}).get("messageTitle", "")
+                content = obj.get("content", "")
+                return title, [content] if content else []
+        except Exception:
+            return "", []
+
+    if path.endswith("transcript.jsonl") or path.endswith("transcript_full.jsonl"):
+        # Prefer transcript_full.jsonl to avoid truncated responses in Antigravity subagents
+        full_path = path.replace("transcript.jsonl", "transcript_full.jsonl")
+        target_path = full_path if os.path.exists(full_path) else path
+        first_user = ""
+        assistant_texts = []
+        try:
+            with open(target_path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    if obj.get("type") in ("USER_INPUT", "SYSTEM_MESSAGE") and not first_user:
+                        first_user = obj.get("content", "")
+                    if obj.get("type") == "PLANNER_RESPONSE" and obj.get("content"):
+                        assistant_texts.append(obj.get("content"))
+        except Exception:
+            pass
+        return first_user, assistant_texts
+
     first_user = ""
     assistant_texts: list[str] = []
     with open(path, encoding="utf-8") as f:
@@ -202,7 +234,15 @@ def main() -> int:
     batches: dict[int, dict[int, tuple[str, str]]] = {}  # batch_num -> entries
     skipped: list[tuple[str, str]] = []
 
-    for fp in sorted(glob.glob(os.path.join(args.tasks_dir, "*.output"))):
+    fps = sorted(glob.glob(os.path.join(args.tasks_dir, "*.output")))
+    if not fps:
+        fps = sorted(glob.glob(os.path.join(args.tasks_dir, "*.json")))
+        brain_dir = os.path.dirname(os.path.abspath(args.tasks_dir))
+        brain_root = os.path.dirname(brain_dir)
+        transcript_fps = sorted(glob.glob(os.path.join(brain_root, "*", ".system_generated", "logs", "transcript.jsonl")))
+        fps.extend(transcript_fps)
+
+    for fp in fps:
         prompt, texts = parse_task_output(fp)
         if not prompt or args.video_id not in prompt:
             continue  # Not a task for this VIDEO_ID
@@ -211,7 +251,7 @@ def main() -> int:
             continue
 
         # Identify batch number from prompt (batch or gap) — match any extension
-        m = re.search(r"(?:batch|gap)_(\d+)\.", prompt)
+        m = re.search(r"(?:batch|gap)[_ ](\d+)", prompt, re.IGNORECASE)
         if not m:
             skipped.append((os.path.basename(fp), "no batch/gap_N in prompt"))
             continue
