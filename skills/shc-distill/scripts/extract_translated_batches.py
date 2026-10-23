@@ -62,8 +62,20 @@ def parse_task_output(path: str) -> tuple[str, list[str]]:
                         continue
                     if obj.get("type") in ("USER_INPUT", "SYSTEM_MESSAGE") and not first_user:
                         first_user = obj.get("content", "")
-                    if obj.get("type") == "PLANNER_RESPONSE" and obj.get("content"):
-                        assistant_texts.append(obj.get("content"))
+                    if obj.get("type") == "PLANNER_RESPONSE":
+                        if obj.get("content"):
+                            assistant_texts.append(obj.get("content"))
+                        for tc in obj.get("tool_calls", []):
+                            if isinstance(tc, dict) and tc.get("name") == "send_message":
+                                msg = tc.get("args", {}).get("Message", "")
+                                if isinstance(msg, str):
+                                    if msg.startswith('"') and msg.endswith('"'):
+                                        try:
+                                            msg = json.loads(msg)
+                                        except Exception:
+                                            msg = msg[1:-1]
+                                    if msg:
+                                        assistant_texts.append(msg)
         except Exception:
             pass
         return first_user, assistant_texts
@@ -239,7 +251,10 @@ def main() -> int:
         fps = sorted(glob.glob(os.path.join(args.tasks_dir, "*.json")))
         brain_dir = os.path.dirname(os.path.abspath(args.tasks_dir))
         brain_root = os.path.dirname(brain_dir)
-        transcript_fps = sorted(glob.glob(os.path.join(brain_root, "*", ".system_generated", "logs", "transcript.jsonl")))
+        transcript_fps = sorted(glob.glob(os.path.join(args.tasks_dir, "*", ".system_generated", "logs", "transcript.jsonl")))
+        transcript_fps.extend(sorted(glob.glob(os.path.join(args.tasks_dir, ".system_generated", "logs", "transcript.jsonl"))))
+        transcript_fps.extend(sorted(glob.glob(os.path.join(brain_root, "*", ".system_generated", "logs", "transcript.jsonl"))))
+        transcript_fps.extend(sorted(glob.glob(os.path.join(brain_dir, "*", ".system_generated", "logs", "transcript.jsonl"))))
         fps.extend(transcript_fps)
 
     for fp in fps:

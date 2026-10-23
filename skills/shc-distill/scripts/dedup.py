@@ -33,6 +33,7 @@ def clean_srt(input_path, output_path):
             text = ' '.join(text_lines)
             # === 清理 HTML 實體和講者標記 ===
             text = html.unescape(text)           # &gt; → >, &amp; → &, etc.
+            text = text.replace(r'\h', ' ')       # VTT/ASS non-breaking space
             text = text.replace('>>', ' ')        # YouTube 講者切換標記
             text = re.sub(r'(?:^|\s)>\s', ' ', text)  # 單獨的 > 標記
             text = re.sub(r'\s+', ' ', text).strip()
