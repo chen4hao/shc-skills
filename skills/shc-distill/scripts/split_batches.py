@@ -73,7 +73,7 @@ PROMPT_EN_TO_ZH = """\
 - 若第一輪翻譯自覺不準，用「修正版」取代「原版」作為最終輸出，不要兩版都保留
 - 主代理 extract 腳本會用**最後一個** assistant message 作為權威版本，所以只要確保最後輸出是完整正確的就好
 
-翻譯完成後回報：輸入條目數={entry_count}，輸出條目數=?，確認一致。"""
+**輸出只能是 SRT 條目**：不要輸出回報句、條目數確認或任何說明文字（這類文字會被當成最後一條字幕的內容）。最後一條的文字必須是原文最後一條的譯文。逐條對照原文翻譯，不可把下一條的內容提前到上一條。"""
 
 PROMPT_ZH_TO_EN = """\
 You are a professional subtitle translator. Translate Traditional Chinese (zh-TW) SRT subtitles to English.
@@ -113,7 +113,7 @@ Use the Read tool to read {srt_path} **entire file**, translate all {entry_count
 - If your first pass feels inaccurate, replace it with a corrected version as the final output. Do not keep both versions
 - The main-agent extractor treats the **last** assistant message as authoritative, so just make sure the last output is complete and correct
 
-After translation, report: input entries={entry_count}, output entries=?, confirm they match."""
+**Output SRT entries only**: Do not output a report, an entry-count check, or any other text (such text becomes part of the last subtitle). The last entry must be the translation of the last source entry. Translate entry by entry. Do not move text from the next entry into the previous one."""
 
 # 子代理的 meta-prompt：告訴子代理去讀 prompt 檔案
 META_PROMPT = """\
