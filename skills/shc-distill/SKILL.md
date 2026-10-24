@@ -476,7 +476,7 @@ uv run python3 $SCRIPTS/emit_book_notes.py "{tasks_dir}" "{專案輸出目錄}" 
 - **分段邊界對齊章節**：優先按書的章節自然邊界切分，避免在段落中間切斷。
 - **保留分段筆記**：分段筆記是最終交付物的一部分，不要刪除。彙總筆記是額外的精華再萃取。
 - **並行效率**：必須在同一個訊息中啟動**所有**子代理，不可分批。若 prompt 太長，優先減少子代理數量（增大每段覆蓋範圍），而非分批啟動。
-  - **例外：超過 10 個子代理時，每則訊息最多 6 個 Agent call，連續幾則訊息發完**（不等前一組完成）。2026-10-24 一次發 26 個，17 個回 `Lock file is already being held` 沒啟動；改成每則 6 個補發後全部成功。發完後核對每個 Agent 結果都是 `Spawned successfully`，失敗的那幾個單獨補發。
+  - **例外：超過 6 個子代理時，每則訊息最多 6 個 Agent call，連續幾則訊息發完**（不等前一組完成）。2026-10-24 一次發 26 個，17 個回 `Lock file is already being held` 沒啟動；改成每則 6 個補發後全部成功。發完後核對每個 Agent 結果都是 `Spawned successfully`，失敗的那幾個單獨補發。
 - **🔴 Checkpoint C — Task list 二選一**：啟動子代理前決定一次:
   - **方案 A**：建立 Task list，且承諾「每收到一個子代理結果就 TaskUpdate」。
   - **方案 B**：完全不建 Task list，只靠子代理通知 + 本地檔案存在性驗證。
@@ -773,7 +773,7 @@ uv run python3 $SCRIPTS/split_batches.py "/tmp/distill-{VIDEO_ID}/{中文clean�
    - `{VIDEO_ID}_{LANG}_batch_{N}.srt` — 各批次 SRT 檔
    - `{VIDEO_ID}_prompt_batch_{N}.txt` — 各批次的完整子代理 prompt（含條目數、檔案路徑、翻譯規則、輸出格式，已自動依翻譯方向切換語言對）
    - `{VIDEO_ID}_agent_config.json` — Agent 啟動設定（含每個 batch 的 `agent_prompt` 和 `description`）
-   - stdout 末尾會印出 phase-specific 提醒，告知「在同一個訊息中啟動全部 Agent」
+   - stdout 末尾會印出 phase-specific 提醒：advisor 單獨一則先發，Agent 每則訊息最多 6 個，並算好要分幾則
 2. **一次性啟動所有 Agent（不需要 Read agent_config.json）**：
    - `split_batches.py` 已輸出 N 個 `{VIDEO_ID}_prompt_batch_{i}.txt` 檔案，子代理會自行讀取這些檔案
    - 主代理**直接**對每個 batch（i=1..N）發一個 Agent call，不需要先 Read `agent_config.json`。參數如下：
@@ -788,7 +788,7 @@ uv run python3 $SCRIPTS/split_batches.py "/tmp/distill-{VIDEO_ID}/{中文clean�
      - `model`: `sonnet`
      - `mode`: `dontAsk`
      - `run_in_background`: `true`
-   - **所有 N 個 Agent call 必須在同一個回覆中發出**（腳本 stdout 已提醒）。**例外：N > 10 時每則訊息最多 6 個**，連續幾則發完，見上方「注意事項 → 並行效率」的檔案鎖說明
+   - **所有 N 個 Agent call 必須在同一個回覆中發出**。**例外：N > 6 時每則訊息最多 6 個**，連續幾則發完（腳本 stdout 已算好分幾則），見上方「注意事項 → 並行效率」的檔案鎖說明
    - **嚴禁** `Read {VIDEO_ID}_agent_config.json`——agent_config 的內容可從本模板 + stdout 完全推得，Read 它只是冗餘的工具呼叫。見 `feedback_srt_read_budget.md`「不需要 Read agent_config.json」。
 
 **🔴 子代理 prompt 中的詞彙替換規則（強制 sanity check）**

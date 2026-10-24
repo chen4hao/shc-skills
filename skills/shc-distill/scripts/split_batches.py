@@ -377,25 +377,25 @@ def split_srt(input_path, output_dir, video_id, num_batches=8, lang="en",
     n = len(batches_info)
     print(f"\n拆分完成：{total} 條字幕 → {n} 個批次（{direction_desc}，{split_by}-based）")
     print("════════════════════════════════════════════════════════")
+    # 每則訊息的 Agent 上限：一次發太多會回 "Lock file is already being held"
+    # （2026-10-24 一次 26 個有 17 個失敗，每則 6 個則全部成功）
+    max_per_msg = 6
     if n <= 3:
-        print(f"⚠️  ≤3 批 → 跳過 sample-first，一次性同訊息啟動")
+        print(f"⚠️  ≤3 批 → 跳過 sample-first")
         print(f"")
-        print(f"   下一訊息【同一個回覆內】併發：")
-        print(f"     - {n} 個 Agent call（batch 1..{n}，每個 run_in_background=true）")
-        print(f"     - Read head 500 + Read tail 200（SRT 主代理筆記素材）")
-        print(f"     - advisor()  ← 與 agents 零資料依賴，必須同訊息並行")
-        print(f"   總計 {n + 3} 個工具同訊息並行")
+        print(f"   訊息 A：advisor() 單獨一則（不與任何工具並行；同 task 1 小時內已 call 過可省）")
+        print(f"   訊息 B：{n} 個 Agent call（batch 1..{n}）+ Read head 500 + Read tail 200（同訊息並行）")
     else:
-        print(f"⚠️  ≥4 批 → 觸發 sample-first 流程（分 2 個訊息）")
+        rest = n - 1
+        n_msgs = -(-rest // max_per_msg)
+        print(f"⚠️  ≥4 批 → 觸發 sample-first 流程")
         print(f"")
         print(f"   訊息 2：batch 1 Agent + Read head 500 + Read tail 200（同訊息並行）")
+        print(f"   訊息 3：advisor() 單獨一則（batch 1 跑的同時；同 task 1 小時內已 call 過可省）")
         print(f"")
-        print(f"   訊息 3（batch 1 驗證通過後）：【同一個回覆內】併發")
-        print(f"     - {n - 1} 個 Agent call（batch 2..{n}，每個 run_in_background=true）")
-        print(f"     - advisor()  ← 禁止拖到 batch 全回傳後單獨 call")
-        print(f"   總計 {n} 個工具同訊息並行")
-        print(f"")
-        print(f"   違規高危：只發 {n - 1} 個 Agent 漏掉 advisor → 損失 ~60s 並行窗口")
+        print(f"   batch 1 驗證通過後（條目數、首尾時間戳、最後一條文字、無 ``` 圍欄）：")
+        print(f"     batch 2..{n} 共 {rest} 個 Agent，每則訊息最多 {max_per_msg} 個，分 {n_msgs} 則連續發出（不等前一組完成）")
+        print(f"     發完核對每個結果都是 Spawned successfully，失敗的單獨補發")
     print(f"")
     print(f"   Agent 設定：model=\"sonnet\", mode=\"dontAsk\", run_in_background=true")
     print(f"   Agent prompt：讀 {video_id}_prompt_batch_N.txt 中的翻譯指示")
