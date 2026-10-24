@@ -11,7 +11,7 @@
 **本 session 的 commit**（分支 `distill/sync-2026-04-26`）
 - `ac00984` fix(split_batches)：刪除翻譯指示裡的回報條目數那一行
 - `e6b89c3` docs(shc-distill)：`SKILL.md` 加分批上限，建立本檔
-- 下一個 commit：`split_batches.py` 的 stdout 提示改成 advisor 先發、Agent 每則最多 6 個
+- `8652325` fix(split_batches)：stdout 提示改成 advisor 先發、Agent 每則最多 6 個
 
 **沒做完的事**：無。
 
@@ -34,7 +34,7 @@
    - Push 成功（`5736016..ac00984`）。
    - Sync 沒有執行：`~/.agents/skills/shc-distill` 與 `~/.claude/skills/shc-distill` 都是指向本 repo 的 symlink，commit 後就生效。跑 `rsync --delete` 會寫回 repo 本身並刪掉 `__pycache__`。
 6. `split_batches.py` 的 stdout 提示與「advisor 序列前置」、分批上限衝突。
-   - 裁決：「1」（改提示文字）
+   - 裁決：「1」（改提示文字）→ `8652325`
    - 改成：≤3 批先 advisor 單獨一則、再發全部 Agent；≥4 批先發 batch 1，advisor 單獨一則，驗證後其餘批次每則最多 6 個，stdout 算好分幾則。
    - `SKILL.md` 的門檻同步從「超過 10 個」改為「超過 6 個」，與腳本一致。
    - 測試：20 條樣本分 2 批、20 批兩種情況，提示文字與則數算式都正確。
