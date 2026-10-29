@@ -12,10 +12,10 @@
 - `420c17d` feat(shc-distill)：加入 `funasr_patch.py`、`hallu_scan.py`、`srt_to_paragraphs.py`
 - `5f250a6` docs(handoff)：本節
 - `23241a9` docs(shc-distill)：`SKILL.md` 在「STT 完成後字元頻次預檢」之後加入 FunASR 修補流程（裁決：「1」）
+- `f4c08ac` feat(whisper_stt)：新增 `--condition-on-previous-text` 參數，預設仍為 `True`（裁決：「commit」）。這個修改在本 session 開始前就已在工作區，不是本 session 寫的；commit 訊息依 diff 內容撰寫，只做了 `py_compile`。
 
 **沒做完的事**
 - `funasr_patch.py` 在 commit 前改過兩處（`OUT_SUFFIX` 生效、說明文字）。改完只做了 `py_compile`，沒有完整重跑一次。
-- 工作區有一個不是本 session 改的檔案：`skills/shc-distill/scripts/whisper_stt.py`（新增 `--condition-on-previous-text` 參數）。本 session 沒有 stage 它。
 
 <details>
 <summary><b>經過與裁決</b></summary>
