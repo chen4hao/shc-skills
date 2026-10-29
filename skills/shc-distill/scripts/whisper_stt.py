@@ -18,6 +18,7 @@ parser = argparse.ArgumentParser(description="Whisper STT with volume detection 
 parser.add_argument('audio_path', help='Audio or video file path')
 parser.add_argument('output_dir', help='Output directory for SRT files')
 parser.add_argument('--language', default=None, help='Language code (e.g., "zh", "en")')
+parser.add_argument('--condition-on-previous-text', default='True', help='Condition on previous text (True or False)')
 parser.add_argument('--model', default='mlx-community/whisper-large-v3-turbo', help='Whisper model')
 args = parser.parse_args()
 
@@ -89,7 +90,7 @@ cmd = [
     '--output-format', 'srt',
     '--output-dir', output_dir,
     '--hallucination-silence-threshold', str(hall_threshold),
-    '--condition-on-previous-text', 'True',
+    '--condition-on-previous-text', str(args.condition_on_previous_text),
     '--temperature', '0',
 ]
 if args.language:
