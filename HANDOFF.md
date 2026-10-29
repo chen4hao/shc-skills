@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-10-29（星期四）shc-distill：FunASR 修補 Whisper 幻覺區的三支腳本
+
+**結論**：新增 3 支腳本。中文長課堂的 Whisper 字幕若卡成重複字，可以用 FunASR Paraformer 切段重轉後補回。腳本已 commit，push 與本檔一起進行。
+
+**本 session 的 commit**（分支 `distill/sync-2026-04-26`）
+- `420c17d` feat(shc-distill)：加入 `funasr_patch.py`、`hallu_scan.py`、`srt_to_paragraphs.py`
+
+**沒做完的事**
+- `SKILL.md` 還沒提到這 3 支腳本。目前只有使用者記憶檔 `feedback_funasr_patch_whisper_hallucination.md` 記錄用法。
+- `funasr_patch.py` 在 commit 前改過兩處（`OUT_SUFFIX` 生效、說明文字）。改完只做了 `py_compile`，沒有完整重跑一次。
+- 工作區有一個不是本 session 改的檔案：`skills/shc-distill/scripts/whisper_stt.py`（新增 `--condition-on-previous-text` 參數）。本 session 沒有 stage 它。
+
+<details>
+<summary><b>經過與裁決</b></summary>
+
+1. 使用者要 distill Bilibili `BV19MGi6dEHC`（北大《價值投資課程》，7 P）。B 站回 HTTP 412（IP 風控），yt-dlp、API、帶 Chrome cookie、關沙箱都失敗。
+   - 使用者提供本地 mp3：`~/aiDownload/【北京大学】经典《价值投资课程》`（7 檔，共約 10.2 小時）。
+2. Whisper large-v3-turbo 在學生發言段落卡成「對對對」「玩玩玩」，最長一段 30 分鐘全毀（第 6 講）。
+   - 使用者問有沒有更好的模型，裁決：「3. 先改用 SenseVoice／Paraformer 重轉 測試看效果如何」
+   - 測試 15 分鐘片段：兩個模型都轉出 Whisper 壞區的內容，專有名詞較準（「宇通客車」對，Whisper 錯成「與同客車」）。Paraformer 斷句較碎；SenseVoice 沒有逐句時間戳，不能做 SRT。
+   - 裁決：「1」（Whisper 為主，壞區用 Paraformer 補）
+3. 第 1 輪偵測只抓「去標點後唯一字 ≤2」，漏掉「神聖上的」「對消費者」「謝謝大家」這類多字片語迴圈。第 2 輪加上「與相鄰條目相同且唯一字 ≤6」。
+   - 兩輪共補回約 4 萬字。第 4 講三段收音不良（講者同時拿兩支麥克風），重轉後仍難辨識。
+4. 筆記產出在 `infoAggr/北京大學價值投資課程/`（`infoAggr` 不是 git repo）：6 份分講筆記、1 份彙總、7 個 `.zh-tw.srt`。第 7 講是李錄 2019-11 北大演講，`infoAggr/李錄/` 已有兩份筆記，不重複萃取。
+5. 裁決：「收進 shc-distill/scripts/」→ 修兩處後複製。
+6. 裁決：「commit」→ `420c17d`，只 commit 這 3 個新檔。
+
+</details>
+
+<details>
+<summary><b>給下一個接手者的注意事項</b></summary>
+
+- `funasr_patch.py` 需要另外的環境：`uv run --python 3.11 --with funasr --with modelscope --with torch --with torchaudio --with opencc-python-reimplemented python -I funasr_patch.py <WORK_DIR> <PART_ID>...`。第一次執行要下載約 1GB 模型，需關沙箱。
+- WORK_DIR 內要有 `{PART_ID}.mp3`（可用符號連結）與 `{PART_ID}.{SRC_SUFFIX}.srt`。`DRY=1` 只列壞區。`SRC_SUFFIX` 與 `OUT_SUFFIX` 相同時會覆寫來源。
+- `whisper_stt_long.py` 在背景執行時，輸出目錄放在專案目錄內就能正常持久化。舊記憶說「背景寫 `/tmp` 會遺失」，這次沒有遇到，因為輸出不在 `/tmp`。
+- `srt_to_paragraphs.py` 的輸出每行約 300 字。子代理 Read 要用 `limit=30` 分批，一次讀整檔會被截斷。
+- `cleanup_epub_txt.py` 會刪掉目標目錄下所有 `_tmp_extract*`。不要對 `infoAggr` 根目錄執行，先把暫存目錄搬進該次的作者目錄再清。
+
+</details>
+
+---
+
 ## 2026-10-24（星期六）shc-distill：字幕翻譯指示修正與子代理分批上限
 
 **結論**：翻譯子代理不再把回報句寫進字幕；超過 6 個子代理時改為每則訊息最多 6 個。兩項都已 commit 並 push。
