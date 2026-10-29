@@ -677,6 +677,31 @@ awk '{print length}' {txt_file} | sort -rn | uniq -c | head -5
 ```
   若最頻行長 ≤3 且佔比 >50%，該段大機率是 Whisper 幻覺區，需額外處理。清理完成後直接跳到步驟 C。
 
+  **中文來源：用 FunASR Paraformer 修補幻覺區**（2026-10-29 增，見 `feedback_funasr_patch_whisper_hallucination.md`）
+
+  中文課堂／演講的學生發言、遠距收音段落，Whisper 常卡成「對對對」或「對消費者」「謝謝大家」這類多字片語迴圈。上面的 awk 預檢抓不到多字片語迴圈，改用 `hallu_scan.py` 確認：
+```bash
+python3 -I $SCRIPTS/hallu_scan.py {SRT} [{SRT} ...]
+```
+  有 ≥60 秒的壞區時，用 `funasr_patch.py` 切段重轉並補回。中文來源優先用這個流程，取代上方「中段幻覺 recovery」的 Whisper 重跑：
+```bash
+# 先試跑，只列壞區
+DRY=1 uv run --python 3.11 --with funasr --with modelscope --with torch --with torchaudio \
+  --with opencc-python-reimplemented python -I $SCRIPTS/funasr_patch.py "{WORK_DIR}" {PART_ID} [{PART_ID} ...]
+# 正式修補：輸出 {PART_ID}.zh-tw.patched.srt
+uv run --python 3.11 --with funasr --with modelscope --with torch --with torchaudio \
+  --with opencc-python-reimplemented python -I $SCRIPTS/funasr_patch.py "{WORK_DIR}" {PART_ID} [{PART_ID} ...]
+```
+  - `{WORK_DIR}` 內要有 `{PART_ID}.mp3`（可用符號連結）與 `{PART_ID}.zh-tw.clean.srt`。`SRC_SUFFIX`／`OUT_SUFFIX` 可改來源與輸出後綴；兩者相同時會覆寫來源。
+  - 第一次執行要下載約 1GB 模型，Bash 需關沙箱。長任務用 `run_in_background`，`{WORK_DIR}` 放在專案目錄內。
+  - 補回字數接近 0 代表該段原本是靜音，假字幕已刪除，屬正常結果。
+  - 收音本身很差的段落（講者同時拿兩支麥克風、學生離麥克風遠），重轉後仍難辨識，不必為此重寫筆記。
+
+  子代理要讀長中文逐字稿時，用 `srt_to_paragraphs.py` 轉成每 60 秒一段、標 `[HH:MM:SS]` 的文字，Key Quote 可附時間戳。每行約 300 字，子代理 prompt 要寫死 `limit=30` 的分批 Read：
+```bash
+python3 -I $SCRIPTS/srt_to_paragraphs.py {SRT} {OUT_TXT}
+```
+
 **Whisper 等待期生產性動作**（適用所有時長場景：短音訊單次 ~3-5 分鐘、長音訊三步驟總計 ~10 分鐘）：
 
 啟動 Whisper（背景或前台逐段）後，主代理**禁止閒置等待**。在啟動 Whisper 的**同一訊息**或下一輪內並行發出：
