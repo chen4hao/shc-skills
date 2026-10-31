@@ -710,6 +710,12 @@ python3 -I $SCRIPTS/srt_to_paragraphs.py {SRT} {OUT_TXT}
 2. **Glob 或 ls 確認作者目錄存在性**（避免後續 finalize 才發現要建目錄）
 3. **預寫 markdown 筆記骨架**到專案目錄，只填 transcript-invariant 欄位：作者名、URL、時長、上傳日期、來源類型、字幕檔清單佔位符。bio/核心論點/Infograph 副標**延後**到 SRT 內容進 context 後再 Edit（見 `feedback_skeleton_defer_bio.md`）
 4. **規劃 SRT sampling 計畫**：若 download.py stdout 的 description 含時間軸（≥6 段），預先把每段時間轉算 offset/limit（`secs × 2 ≈ entry`、`entry × 4 ≈ 行號`），準備 SRT 完成後**一次性同訊息並行 5-6 個 Read**（見 `feedback_srt_sampling_upfront_plan.md`）
+5. **搜尋現成逐字稿**（2026-10-31 增）：用 WebSearch 搜 `"{節目名}" {標題關鍵字} transcript`。官方頁、電子報、部落格都可能有人工聽打稿。
+   - **找到**：用 WebFetch 取人名、書名、機構名的拼法，以及每段的說話者。拼法寫進 glossary 與 finalize 的 `--mishearing-pairs`；Key Quote 的原文與歸屬用逐字稿核對。
+   - **字幕仍以 Whisper 為準**：現成逐字稿通常沒有時間軸，不能取代 SRT。第三方稿也可能有錯，與 Whisper 不一致時以音訊為準，人名以官方頁或 description 為準。
+   - **找不到**：照原流程，不再追加搜尋。
+   - **為什麼不用 `--initial-prompt`**：mlx_whisper 的 initial prompt 只作用於第一個 30 秒段落，對中後段才出現的人名幾乎沒有效果。
+   - 實例：2026-10-31 Todd Combs × Value Investing with Legends（27 分鐘）。Libsyn 官方頁沒有逐字稿，Substack「A Letter a Day #180」有完整聽打稿。Whisper 聽錯 6 組人名與機構名（Mauboussin、Heilbrunn、Roger Murray、Bruce Greenwald、Arbesman、float），逐字稿可以一次核對。
 
 **長音訊三步驟特有**（逐段 Whisper 各段間隙）：可用 Read 取 `{VIDEO_ID}.info.json` 前 5 行（雖然 download.py stdout 已有同樣資訊，但 info.json 的 description 不被 stdout 截斷）。
 
