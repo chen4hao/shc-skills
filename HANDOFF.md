@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-10-31（星期六）shc-distill：無字幕 podcast 改為同時搜尋現成逐字稿
+
+**結論**：`SKILL.md` 的「Whisper 等待期生產性動作」新增第 5 項：Whisper 轉錄的同時用 WebSearch 找人工聽打稿，用來核對人名、說話者與 Key Quote。字幕仍以 Whisper 為準。分支已用 PR #4 合併到 main。
+
+**本 session 的 commit**
+- `43a307c` docs(shc-distill)：`SKILL.md` 加入「搜尋現成逐字稿」步驟（裁決：「照建議做法」）
+- `1b95de5` Merge PR #4 到 main（裁決：「合併到 main」）。PR #4 一併帶入 PR #3 之後的 13 個 commit（2026-10-22 至 10-31）。合併前確認 main 只多 3 個 merge commit，沒有衝突。
+- 本節的 docs(handoff) commit
+
+**沒做完的事**：無。
+
+<details>
+<summary><b>經過與裁決</b></summary>
+
+1. 使用者要 distill `https://valueinvestingwithlegends.libsyn.com/todd-combs-charlie-mungers-legacy`（27 分鐘，無字幕）。走 Whisper STT，產出筆記與三個 SRT，存在 `infoAggr/Todd-Combs/2024-05-Todd-Combs-Charlie-Mungers-Legacy.*`（`infoAggr` 不是 git repo）。
+   - Whisper 聽錯 6 組人名與機構名：Mobison→Mauboussin、Halbrun→Heilbrunn、Gram and Dot→Graham and Dodd、Roya Mary→Roger Murray、Gingwald→Greenwald、Arbersman→Arbesman，另有 flow→float。finalize 用 `--mishearing-pairs` 修正 13 處。
+   - 翻譯子代理有 2 條只填「。」（第 124、422 條），finalize 後用 `sed` 定點修 zh-tw 與 en&cht。
+2. 使用者問 Whisper 有沒有更好的選擇。我列出 A（`--initial-prompt`）、B（WhisperX 說話者分離）、C（雲端 API）、D（先找官方逐字稿），推薦 A。
+3. 裁決：「A」。查 `mlx_whisper --help` 時發現 `--initial-prompt` 只作用於第一個 30 秒段落，對中後段的人名幾乎無效。尚未改任何檔案時，使用者改為裁決「D」。
+4. 搜尋結果：Libsyn 官方頁沒有逐字稿，Substack「A Letter a Day #180」有完整聽打稿，但沒有時間軸，只能拿來核對，不能取代 SRT。
+5. 建議改為「Whisper 照跑 ＋ 同時搜尋逐字稿核對」，只改流程文件、不動腳本。裁決：「照建議做法」。
+6. 裁決：「commit 並 push」→ `43a307c`；裁決：「合併到 main」→ PR #4。
+
+</details>
+
+<details>
+<summary><b>給下一個接手者的注意事項</b></summary>
+
+- 不要再提 `--initial-prompt` 當作人名修正方案。原因已寫在 `SKILL.md` 第 5 項。
+- `whisper_stt.py` 與 `whisper_stt_long.py` 本 session 都沒有修改。
+- 本機分支仍是 `distill/sync-2026-04-26`，合併後可以繼續在這個分支上改。
+
+</details>
+
+---
+
 ## 2026-10-29（星期四）shc-distill：FunASR 修補 Whisper 幻覺區的三支腳本
 
 **結論**：新增 3 支腳本。中文長課堂的 Whisper 字幕若卡成重複字，可以用 FunASR Paraformer 切段重轉後補回。腳本已 commit，push 與本檔一起進行。
