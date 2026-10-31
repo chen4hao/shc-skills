@@ -476,6 +476,7 @@ uv run python3 $SCRIPTS/emit_book_notes.py "{tasks_dir}" "{專案輸出目錄}" 
 - **分段邊界對齊章節**：優先按書的章節自然邊界切分，避免在段落中間切斷。
 - **保留分段筆記**：分段筆記是最終交付物的一部分，不要刪除。彙總筆記是額外的精華再萃取。
 - **並行效率**：必須在同一個訊息中啟動**所有**子代理，不可分批。若 prompt 太長，優先減少子代理數量（增大每段覆蓋範圍），而非分批啟動。
+  - **例外：超過 6 個子代理時，每則訊息最多 6 個 Agent call，連續幾則訊息發完**（不等前一組完成）。2026-10-24 一次發 26 個，17 個回 `Lock file is already being held` 沒啟動；改成每則 6 個補發後全部成功。發完後核對每個 Agent 結果都是 `Spawned successfully`，失敗的那幾個單獨補發。
 - **🔴 Checkpoint C — Task list 二選一**：啟動子代理前決定一次:
   - **方案 A**：建立 Task list，且承諾「每收到一個子代理結果就 TaskUpdate」。
   - **方案 B**：完全不建 Task list，只靠子代理通知 + 本地檔案存在性驗證。
@@ -676,6 +677,31 @@ awk '{print length}' {txt_file} | sort -rn | uniq -c | head -5
 ```
   若最頻行長 ≤3 且佔比 >50%，該段大機率是 Whisper 幻覺區，需額外處理。清理完成後直接跳到步驟 C。
 
+  **中文來源：用 FunASR Paraformer 修補幻覺區**（2026-10-29 增，見 `feedback_funasr_patch_whisper_hallucination.md`）
+
+  中文課堂／演講的學生發言、遠距收音段落，Whisper 常卡成「對對對」或「對消費者」「謝謝大家」這類多字片語迴圈。上面的 awk 預檢抓不到多字片語迴圈，改用 `hallu_scan.py` 確認：
+```bash
+python3 -I $SCRIPTS/hallu_scan.py {SRT} [{SRT} ...]
+```
+  有 ≥60 秒的壞區時，用 `funasr_patch.py` 切段重轉並補回。中文來源優先用這個流程，取代上方「中段幻覺 recovery」的 Whisper 重跑：
+```bash
+# 先試跑，只列壞區
+DRY=1 uv run --python 3.11 --with funasr --with modelscope --with torch --with torchaudio \
+  --with opencc-python-reimplemented python -I $SCRIPTS/funasr_patch.py "{WORK_DIR}" {PART_ID} [{PART_ID} ...]
+# 正式修補：輸出 {PART_ID}.zh-tw.patched.srt
+uv run --python 3.11 --with funasr --with modelscope --with torch --with torchaudio \
+  --with opencc-python-reimplemented python -I $SCRIPTS/funasr_patch.py "{WORK_DIR}" {PART_ID} [{PART_ID} ...]
+```
+  - `{WORK_DIR}` 內要有 `{PART_ID}.mp3`（可用符號連結）與 `{PART_ID}.zh-tw.clean.srt`。`SRC_SUFFIX`／`OUT_SUFFIX` 可改來源與輸出後綴；兩者相同時會覆寫來源。
+  - 第一次執行要下載約 1GB 模型，Bash 需關沙箱。長任務用 `run_in_background`，`{WORK_DIR}` 放在專案目錄內。
+  - 補回字數接近 0 代表該段原本是靜音，假字幕已刪除，屬正常結果。
+  - 收音本身很差的段落（講者同時拿兩支麥克風、學生離麥克風遠），重轉後仍難辨識，不必為此重寫筆記。
+
+  子代理要讀長中文逐字稿時，用 `srt_to_paragraphs.py` 轉成每 60 秒一段、標 `[HH:MM:SS]` 的文字，Key Quote 可附時間戳。每行約 300 字，子代理 prompt 要寫死 `limit=30` 的分批 Read：
+```bash
+python3 -I $SCRIPTS/srt_to_paragraphs.py {SRT} {OUT_TXT}
+```
+
 **Whisper 等待期生產性動作**（適用所有時長場景：短音訊單次 ~3-5 分鐘、長音訊三步驟總計 ~10 分鐘）：
 
 啟動 Whisper（背景或前台逐段）後，主代理**禁止閒置等待**。在啟動 Whisper 的**同一訊息**或下一輪內並行發出：
@@ -684,6 +710,12 @@ awk '{print length}' {txt_file} | sort -rn | uniq -c | head -5
 2. **Glob 或 ls 確認作者目錄存在性**（避免後續 finalize 才發現要建目錄）
 3. **預寫 markdown 筆記骨架**到專案目錄，只填 transcript-invariant 欄位：作者名、URL、時長、上傳日期、來源類型、字幕檔清單佔位符。bio/核心論點/Infograph 副標**延後**到 SRT 內容進 context 後再 Edit（見 `feedback_skeleton_defer_bio.md`）
 4. **規劃 SRT sampling 計畫**：若 download.py stdout 的 description 含時間軸（≥6 段），預先把每段時間轉算 offset/limit（`secs × 2 ≈ entry`、`entry × 4 ≈ 行號`），準備 SRT 完成後**一次性同訊息並行 5-6 個 Read**（見 `feedback_srt_sampling_upfront_plan.md`）
+5. **搜尋現成逐字稿**（2026-10-31 增）：用 WebSearch 搜 `"{節目名}" {標題關鍵字} transcript`。官方頁、電子報、部落格都可能有人工聽打稿。
+   - **找到**：用 WebFetch 取人名、書名、機構名的拼法，以及每段的說話者。拼法寫進 glossary 與 finalize 的 `--mishearing-pairs`；Key Quote 的原文與歸屬用逐字稿核對。
+   - **字幕仍以 Whisper 為準**：現成逐字稿通常沒有時間軸，不能取代 SRT。第三方稿也可能有錯，與 Whisper 不一致時以音訊為準，人名以官方頁或 description 為準。
+   - **找不到**：照原流程，不再追加搜尋。
+   - **為什麼不用 `--initial-prompt`**：mlx_whisper 的 initial prompt 只作用於第一個 30 秒段落，對中後段才出現的人名幾乎沒有效果。
+   - 實例：2026-10-31 Todd Combs × Value Investing with Legends（27 分鐘）。Libsyn 官方頁沒有逐字稿，Substack「A Letter a Day #180」有完整聽打稿。Whisper 聽錯 6 組人名與機構名（Mauboussin、Heilbrunn、Roger Murray、Bruce Greenwald、Arbesman、float），逐字稿可以一次核對。
 
 **長音訊三步驟特有**（逐段 Whisper 各段間隙）：可用 Read 取 `{VIDEO_ID}.info.json` 前 5 行（雖然 download.py stdout 已有同樣資訊，但 info.json 的 description 不被 stdout 截斷）。
 
@@ -772,7 +804,7 @@ uv run python3 $SCRIPTS/split_batches.py "/tmp/distill-{VIDEO_ID}/{中文clean�
    - `{VIDEO_ID}_{LANG}_batch_{N}.srt` — 各批次 SRT 檔
    - `{VIDEO_ID}_prompt_batch_{N}.txt` — 各批次的完整子代理 prompt（含條目數、檔案路徑、翻譯規則、輸出格式，已自動依翻譯方向切換語言對）
    - `{VIDEO_ID}_agent_config.json` — Agent 啟動設定（含每個 batch 的 `agent_prompt` 和 `description`）
-   - stdout 末尾會印出 phase-specific 提醒，告知「在同一個訊息中啟動全部 Agent」
+   - stdout 末尾會印出 phase-specific 提醒：advisor 單獨一則先發，Agent 每則訊息最多 6 個，並算好要分幾則
 2. **一次性啟動所有 Agent（不需要 Read agent_config.json）**：
    - `split_batches.py` 已輸出 N 個 `{VIDEO_ID}_prompt_batch_{i}.txt` 檔案，子代理會自行讀取這些檔案
    - 主代理**直接**對每個 batch（i=1..N）發一個 Agent call，不需要先 Read `agent_config.json`。參數如下：
@@ -787,7 +819,7 @@ uv run python3 $SCRIPTS/split_batches.py "/tmp/distill-{VIDEO_ID}/{中文clean�
      - `model`: `sonnet`
      - `mode`: `dontAsk`
      - `run_in_background`: `true`
-   - **所有 N 個 Agent call 必須在同一個回覆中發出**（腳本 stdout 已提醒）
+   - **所有 N 個 Agent call 必須在同一個回覆中發出**。**例外：N > 6 時每則訊息最多 6 個**，連續幾則發完（腳本 stdout 已算好分幾則），見上方「注意事項 → 並行效率」的檔案鎖說明
    - **嚴禁** `Read {VIDEO_ID}_agent_config.json`——agent_config 的內容可從本模板 + stdout 完全推得，Read 它只是冗餘的工具呼叫。見 `feedback_srt_read_budget.md`「不需要 Read agent_config.json」。
 
 **🔴 子代理 prompt 中的詞彙替換規則（強制 sanity check）**

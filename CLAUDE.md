@@ -36,6 +36,10 @@ npx skills list
 npx skills remove shc-review
 ```
 
+## 接手文件
+
+- `HANDOFF.md`：每個 session 一節，新的在最上面（2026-10-24 起）
+
 ## 編輯 Skills 的注意事項
 
 - `description` 欄位是 AI agent 判斷何時觸發此 skill 的依據，需同時包含中英文觸發描述
